@@ -1,0 +1,337 @@
+#!/usr/bin/env python3
+"""adi2: control an RME ADI-2 Pro over its USB MIDI port (RME SysEx protocol v1.2).
+
+Protocol: docs/proto/MIDITable_ADI-2_261030.ods (RME, "MIDI-Protocol for RME ADI-2 DAC,
+ADI-2 Pro and ADI-2/4 Pro SE/EX"). Stdlib only, talks to /dev/snd/midiC*D0 directly.
+
+  adi2 dump [--json]          every setting, decoded
+  adi2 get ph12.volume        one setting (scope.param)
+  adi2 set ph12.volume -20    set one or more: adi2 set ph12.mute on ph12.dim off
+  adi2 status                 lock/clock/plug/rate status word
+  adi2 watch                  print changes live (knob turns, remote)
+  adi2 list [scope]           all known parameter names and allowed values
+  adi2 preset load|save N     device setups 1..9 (save overwrites that slot)
+  adi2 raw F0 ... F7          send raw SysEx, print replies
+"""
+import glob, json, os, re, select, sys, time
+
+VENDOR = [0x00, 0x20, 0x0D]
+DEV_ID = 0x72  # ADI-2 Pro
+
+# ---------------------------------------------------------------- parameter tables
+def onoff():
+    return ["off", "on"]
+
+INPUT = {
+    1: ("ref_level", ["+4dBu", "+13dBu", "+19dBu", "+24dBu"]),
+    2: ("auto_ref_level", onoff()),
+    3: ("trim_left", 0.5), 4: ("trim_right", 0.5),
+    5: ("phase_invert", ["off", "both", "left", "right"]),
+    6: ("ms_proc", onoff()),
+    7: ("ad_filter", ["sd_sharp", "sd_slow", "sharp", "slow"]),
+    8: ("dual_eq", onoff()),
+    9: ("ad_conversion", ["pcm", "dsd"]),
+    10: ("dc_filter", ["auto", "adc", "rme", "none"]),
+}
+LOOPBACK = ["off", "pre_fx_1/2", "post_fx_1/2", "post_1/2_-6dB", "pre_fx_3/4", "post_fx_3/4",
+            "post_3/4_-6dB", "pre_fx_5/6", "post_fx_5/6", "post_5/6_-6dB"]
+def output(phones):
+    return {
+        1: ("source", ["auto", "aes", "spdif", "analog", "usb1/2", "usb3/4"]),
+        2: ("ref_level", ["lo_power", "hi_power"] if phones else ["+4dBu", "+13dBu", "+19dBu", "+24dBu"]),
+        3: ("auto_ref_level", onoff()),
+        4: ("mono", ["off", "on", "to_left"]),
+        5: ("width", 0.01), 6: ("ms_proc", onoff()),
+        7: ("polarity", ["off", "both", "left", "right"]),
+        8: ("crossfeed", ["off", "1", "2", "3", "4", "5"]),
+        9: ("da_filter", ["sd_sharp", "sd_slow", "sharp", "slow", "nos", "sd_ld"]),
+        10: ("de_emphasis", ["auto", "on", "off"]),
+        11: ("dual_eq", onoff()),
+        12: ("volume", 0.1), 13: ("lock_volume", onoff()),
+        14: ("balance", 0.01), 15: ("mute", onoff()), 16: ("dim", onoff()),
+        17: ("loopback_to_usb", LOOPBACK),
+        18: ("dig_dc_protection", ["off", "on", "filter"]),
+        20: ("loudness", onoff()), 21: ("loudness_bass", 0.5), 22: ("loudness_treble", 0.5),
+        23: ("loudness_low_vol_ref", 0.5),
+    }
+EQ_PRESET_SEL = ["manual", "temp"] + [f"preset{i}" for i in range(1, 21)] + ["clear"]
+def eq(left):
+    t = {
+        3: ("b1_type", ["peak", "shelf", "hi_pass", "hi_cut"]), 4: ("b1_gain", 0.5), 5: ("b1_freq", "hz"), 6: ("b1_q", 0.1),
+        7: ("b2_gain", 0.5), 8: ("b2_freq", "hz"), 9: ("b2_q", 0.1),
+        10: ("b3_gain", 0.5), 11: ("b3_freq", "hz"), 12: ("b3_q", 0.1),
+        13: ("b4_gain", 0.5), 14: ("b4_freq", "hz"), 15: ("b4_q", 0.1),
+        16: ("b5_type", ["peak", "shelf", "hi_cut"]), 17: ("b5_gain", 0.5), 18: ("b5_freq", "hz"), 19: ("b5_q", 0.1),
+    }
+    if left:
+        t.update({
+            2: ("eq_enable", onoff()),
+            20: ("bt_enable", onoff()), 21: ("bass_gain", 0.5), 22: ("bass_freq", "hz"), 23: ("bass_q", 0.1),
+            24: ("treble_gain", 0.5), 25: ("treble_freq", "hz"), 26: ("treble_q", 0.1),
+            27: ("load_bt_with_preset", onoff()), 28: ("eq_preset_select", EQ_PRESET_SEL),
+        })
+    return t
+
+DEVICE = {
+    2: ("auto_standby", ["off", "30min", "1h", "2h", "4h"]),
+    3: ("dsd_detection", onoff()), 4: ("dsd_filter", ["50kHz", "150kHz"]),
+    5: ("dsd_direct_line", onoff()),
+    6: ("basic_mode", ["auto", "ad/da", "usb", "preamp", "dig_thru", "dac"]),
+    7: ("digital_out_source", ["default", "main_out"]),
+    8: ("dual_phones", onoff()),
+    9: ("bal_trs_phones_mode", ["off", "on", "auto"]),
+    10: ("toggle_phones_line", ["off", "ph1/2", "ph3/4", "1/2+3/4", "all_plugged", "line/digital"]),
+    11: ("mute_line_vs_ph12", onoff()), 12: ("mute_line_vs_ph34", onoff()),
+    15: ("clock_source", ["auto", "int", "aes", "spdif"]),
+    16: ("sample_rate", ["44.1k", "48k", "88.2k", "96k", "176.4k", "192k", "352.8k", "384k", "705.6k", "768k"]),
+    22: ("ir5", None), 23: ("ir6", None), 24: ("ir7", None),
+    25: ("remap_keys", ["off", "on", "ir_remote"]),
+    26: ("key_vol", None), 27: ("key_io", None), 28: ("key_eq", None), 29: ("key_setup", None),
+    32: ("display_mode", ["default", "dark"]),
+    33: ("meter_color", ["green", "cyan", "amber", "monochrome", "red", "orange"]),
+    34: ("hor_meter", ["post_fx", "pre_fx", "dual", "post_fx_dBu"]),
+    35: ("autodark", onoff()), 36: ("show_vol_screen", onoff()),
+    37: ("lock_ui", ["off", "remote", "keys", "keys+remote"]),
+    40: ("spdif_input", ["auto", "coax", "optical"]),
+    41: ("src_mode", ["off", "aes_in", "spdif_in"]),
+    42: ("src_gain_dig", ["0dB", "-3dB"]),
+    43: ("optical_out_source", ["spdif", "adat"]),
+    62: ("load_volume", onoff()),
+}
+READONLY = {("device", "sample_rate")}
+
+# scope name -> (address, table)
+SCOPES = {
+    "input": (0, INPUT), "input_eq_l": (1, eq(True)), "input_eq_r": (2, eq(False)),
+    "line": (3, output(False)), "line_eq_l": (4, eq(True)), "line_eq_r": (5, eq(False)),
+    "ph12": (6, output(True)), "ph12_eq_l": (7, eq(True)), "ph12_eq_r": (8, eq(False)),
+    "ph34": (9, output(True)), "ph34_eq_l": (10, eq(True)), "ph34_eq_r": (11, eq(False)),
+    "device": (12, DEVICE),
+}
+ADDR2SCOPE = {a: s for s, (a, _) in SCOPES.items()}
+
+# ---------------------------------------------------------------- encode / decode
+def s12(v):
+    return v - 4096 if v & 0x800 else v
+
+def decode_container(b1, b2, b3):
+    addr = (b1 >> 3) & 0xF
+    if addr == 12:
+        idx = ((b1 & 7) << 3) | ((b2 >> 4) & 7)
+        return addr, idx, ((b2 & 0xF) << 7) | b3, False
+    idx = ((b1 & 7) << 2) | ((b2 >> 5) & 3)
+    raw12 = ((b2 & 0x1F) << 7) | b3
+    return addr, idx, raw12, True
+
+def encode_container(addr, idx, raw):
+    if addr == 12:
+        return [(addr << 3) | (idx >> 3), ((idx & 7) << 4) | ((raw >> 7) & 0xF), raw & 0x7F]
+    return [(addr << 3) | (idx >> 2), ((idx & 3) << 5) | ((raw >> 7) & 0x1F), raw & 0x7F]
+
+def to_human(addr, idx, raw12, chan):
+    scope = ADDR2SCOPE.get(addr)
+    if scope is None or scope in ("eq_preset_l", "eq_preset_r"):
+        return f"addr{addr}", f"p{idx}", raw12
+    name, kind = SCOPES[scope][1].get(idx, (f"p{idx}", None))
+    if kind == "hz":
+        f10 = bool(raw12 & 0x800) if chan else False
+        val = (raw12 & 0x7FF) * (10 if f10 else 1)
+        return scope, name, val
+    v = s12(raw12) if chan else raw12
+    if isinstance(kind, list):
+        return scope, name, kind[v] if 0 <= v < len(kind) else v
+    if isinstance(kind, float):
+        return scope, name, round(v * kind, 2)
+    return scope, name, v
+
+def from_human(scope, name, text):
+    addr, table = SCOPES[scope]
+    hit = [(i, k) for i, (n, k) in table.items() if n == name]
+    if not hit:
+        sys.exit(f"unknown param {scope}.{name}  (try: adi2 list {scope})")
+    idx, kind = hit[0]
+    if (scope, name) in READONLY:
+        sys.exit(f"{scope}.{name} is display only")
+    t = str(text).lower()
+    if isinstance(kind, list):
+        if t in ("on", "true", "yes") and kind == onoff(): v = 1
+        elif t in ("off", "false", "no") and kind == onoff(): v = 0
+        elif t in [k.lower() for k in kind]: v = [k.lower() for k in kind].index(t)
+        elif re.fullmatch(r"-?\d+", t) and 0 <= int(t) < len(kind) and t not in kind: v = int(t)
+        else: sys.exit(f"{scope}.{name}: '{text}' not in {kind}")
+        raw = v & 0xFFF
+    elif kind == "hz":
+        f = int(float(t.rstrip("hz").rstrip("k") or 0) * (1000 if t.endswith("k") or t.endswith("khz") else 1))
+        raw = (0x800 | round(f / 10)) if f > 2047 else f
+    elif isinstance(kind, float):
+        v = round(float(t.replace("db", "")) / kind)
+        raw = v & 0xFFF
+    else:
+        raw = int(t, 0) & 0xFFF
+    return addr, idx, raw, kind
+
+# ---------------------------------------------------------------- MIDI I/O
+def find_port():
+    for path in glob.glob("/proc/asound/card*/id"):
+        card = path.split("/")[3][4:]
+        name = open(f"/proc/asound/card{card}/../cards").read()
+        line = [l for l in name.splitlines() if re.match(rf"\s*{card}\s", l)]
+        if line and "ADI-2 Pro" in line[0] and os.path.exists(f"/dev/snd/midiC{card}D0"):
+            return f"/dev/snd/midiC{card}D0"
+    sys.exit("ADI-2 Pro MIDI port not found (is it plugged in and powered?)")
+
+class Dev:
+    def __init__(self):
+        self.fd = os.open(find_port(), os.O_RDWR | os.O_NONBLOCK)
+        self.buf = bytearray()
+
+    def send(self, cmd, payload=()):
+        msg = bytes([0xF0, *VENDOR, DEV_ID, cmd, *payload, 0xF7])
+        os.write(self.fd, msg)
+
+    def messages(self, quiet=1.2, total=8.0, forever=False):
+        """yield complete SysEx messages until `quiet` s of silence (or forever)."""
+        start = last = time.time()
+        while True:
+            to = None if forever else max(0, min(quiet - (time.time() - last), total - (time.time() - start)))
+            if to == 0:
+                return
+            r, _, _ = select.select([self.fd], [], [], to)
+            if not r:
+                if forever: continue
+                return
+            self.buf += os.read(self.fd, 4096)
+            last = time.time()
+            while True:
+                s = self.buf.find(0xF0)
+                if s < 0: self.buf.clear(); break
+                e = self.buf.find(0xF7, s)
+                if e < 0: del self.buf[:s]; break
+                m = bytes(self.buf[s:e + 1]); del self.buf[:e + 1]
+                if list(m[1:5]) == VENDOR + [DEV_ID]:
+                    yield m
+
+    def params(self, msg):
+        if msg[5] != 0x01: return []
+        body = msg[6:-1]
+        return [decode_container(*body[i:i + 3]) for i in range(0, len(body) - 2, 3)]
+
+def read_all(dev):
+    dev.send(0x03, [0x09])
+    state, status = {}, None
+    for m in dev.messages():
+        if m[5] == 0x07: status = m
+        for addr, idx, raw, chan in dev.params(m):
+            sc, n, v = to_human(addr, idx, raw, chan)
+            state.setdefault(sc, {})[n] = v
+    return state, status
+
+def decode_status(m):
+    b = list(m[5:-1])  # b[0] = 0x07
+    if len(b) < 13: return {"raw": m.hex(" ")}
+    io1 = b[2] | b[3] << 7 | b[4] << 14 | b[5] << 21
+    io2 = b[6] | b[7] << 7 | b[8] << 14 | b[9] << 21
+    rates = ["32k", "44.1k", "48k", "?", "64k", "88.2k", "96k", "?", "128k", "176.4k", "192k"]
+    rate = lambda x: rates[x] if x < len(rates) else str(x)
+    return {
+        "active_output_1/2": b[1] & 3, "line_active": (b[1] >> 4) & 3, "phones34_active": bool(b[1] & 0x40),
+        "aes_lock": bool(io1 & 1), "spdif_lock": bool(io1 & 2), "aes_sync": bool(io1 & 4), "spdif_sync": bool(io1 & 8),
+        "spdif_source": "optical" if io1 & 16 else "coax", "adat": bool(io1 & 32),
+        "clock_source": ["internal", "aes", "spdif", "internal"][(io1 >> 6) & 3],
+        "aes_in_rate": rate((io1 >> 8) & 15), "spdif_in_rate": rate((io1 >> 12) & 15),
+        "internal_rate_code": (io1 >> 16) & 31,
+        "phones1_plugged": bool(io1 >> 21 & 1), "phones2_plugged": bool(io1 >> 27 & 1),
+        "phones1_overcurrent": bool(io1 >> 25 & 1), "phones2_overcurrent": bool(io1 >> 26 & 1),
+        "high_load": bool(io2 & 3), "dsd_usb": bool(io2 & 4),
+        "dc_error_phones1": bool(io2 >> 18 & 1), "dc_error_phones2": bool(io2 >> 19 & 1), "power_fail": bool(io2 >> 24 & 1),
+        "device_mode": b[10] & 7, "balanced_mode": bool(b[10] & 8),
+        "protocol_rev": b[11] & 15, "8ch_mode": bool(b[11] & 16),
+        "dac_mode_rate_code": b[12] & 31 if len(b) > 12 else None,
+        "dc_detect_line": bool(b[13] & 8) if len(b) > 13 else None,
+        "dc_detect_phones": bool(b[13] & 16) if len(b) > 13 else None,
+    }
+
+# ---------------------------------------------------------------- commands
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__); return
+    cmd, args = argv[0], argv[1:]
+    if cmd == "list":
+        for sc, (a, t) in SCOPES.items():
+            if args and sc != args[0]: continue
+            for i, (n, k) in sorted(t.items()):
+                desc = k if isinstance(k, list) else {0.5: "0.5 dB steps", 0.1: "0.1 steps (volume dB)", 0.01: "-1.00..1.00", "hz": "Hz"}.get(k, "raw int")
+                print(f"{sc}.{n:24} {desc}")
+        return
+    dev = Dev()
+    if cmd == "dump":
+        state, status = read_all(dev)
+        if "--json" in args:
+            print(json.dumps(state, indent=1)); return
+        for sc in SCOPES:
+            if sc not in state: continue
+            print(f"[{sc}]")
+            for n, v in state[sc].items(): print(f"  {n:24} {v}")
+        for sc in state:
+            if sc not in SCOPES: print(f"[{sc}] {state[sc]}")
+    elif cmd == "get":
+        state, _ = read_all(dev)
+        for a in args:
+            sc, n = a.split(".", 1)
+            print(f"{a} = {state.get(sc, {}).get(n, '?')}")
+    elif cmd == "set":
+        if len(args) % 2: sys.exit("usage: adi2 set scope.param value [scope.param value ...]")
+        force = "--force" in args
+        args = [a for a in args if a != "--force"]
+        payload, wanted = [], []
+        state = None
+        for key, val in zip(args[::2], args[1::2]):
+            sc, n = key.split(".", 1)
+            if sc not in SCOPES: sys.exit(f"unknown scope {sc}; scopes: {', '.join(SCOPES)}")
+            addr, idx, raw, kind = from_human(sc, n, val)
+            if n == "volume" and sc.startswith("ph") and not force:
+                state = state or read_all(dev)[0]
+                cur = state.get(sc, {}).get("volume")
+                new = s12(raw) * 0.1
+                if isinstance(cur, (int, float)) and new - cur > 6:
+                    sys.exit(f"refusing to raise {sc}.volume {cur} -> {new} dB in one step (>6 dB jump, ears). Use --force.")
+            payload += encode_container(addr, idx, raw); wanted.append(key)
+        dev.send(0x02, payload)
+        time.sleep(0.15)
+        state, _ = read_all(dev)
+        for key in wanted:
+            sc, n = key.split(".", 1)
+            print(f"{key} = {state.get(sc, {}).get(n, '?')}")
+    elif cmd == "status":
+        dev.send(0x03, [0x09])
+        for m in dev.messages(quiet=1.5, total=4):
+            if m[5] == 0x07:
+                print(json.dumps(decode_status(m), indent=1)); return
+        sys.exit("no status message received")
+    elif cmd == "watch":
+        dev.send(0x03, [0x09])
+        seen = {}
+        for m in dev.messages(forever=True):
+            for addr, idx, raw, chan in dev.params(m):
+                sc, n, v = to_human(addr, idx, raw, chan)
+                if seen.get((sc, n)) != v:
+                    if (sc, n) in seen: print(f"{time.strftime('%H:%M:%S')} {sc}.{n} = {v}", flush=True)
+                    seen[(sc, n)] = v
+    elif cmd == "preset":
+        if len(args) != 2 or args[0] not in ("load", "save") or not args[1].isdigit() or not 1 <= int(args[1]) <= 9:
+            sys.exit("usage: adi2 preset load|save 1..9")
+        n = int(args[1])
+        dev.send(0x04, [n if args[0] == "load" else 0x09 + n])
+        print(f"{args[0]}ed setup {n}")
+    elif cmd == "factory":
+        if "--yes" not in args: sys.exit("factory reset wipes device settings: adi2 factory --yes")
+        dev.send(0x04, [0x13]); print("factory settings loaded")
+    elif cmd == "raw":
+        b = bytes(int(x, 16) for x in args)
+        os.write(dev.fd, b)
+        for m in dev.messages(): print(m.hex(" ").upper())
+    else:
+        sys.exit(f"unknown command {cmd}\n{__doc__}")
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
