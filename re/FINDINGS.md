@@ -24,23 +24,27 @@ RME's MADIface driver (DeviceIoControl), so the Windows binary hides the wire fo
 tool uses IOKit `IOUSBDeviceInterface245::DeviceRequestTO` (vtable +0xF0) and
 `IOUSBInterfaceInterface::ReadPipe/WritePipe` (+0xF8/+0x100) directly, so the wire format is visible.
 
-All control requests: `bmRequestType = 0x40 | dir<<7` (vendor, device recipient), 30 ms timeouts.
+Every control request whose setup the tool builds inline uses `bmRequestType = 0x40 | dir<<7` (vendor, device recipient) with 30 ms timeouts. A generic wrapper (`FUN_100001d1c`, bRequest passed in) has no direct callers in the disassembly.
 
-| bRequest | dir | wValue / wIndex / len | meaning (from code) |
+| bRequest | dir | wValue / wIndex / len | meaning (O = observed in code flow, I = inferred) |
 |---|---|---|---|
-| 0x1C | IN | 0 / 0 / 4 | at enumeration, every RME device: `rev = word >> 16` = running USB/FPGA rev |
-| 0x18 | OUT | 1 / page / 0 | read flash page -> then bulk IN 256 bytes on EP 0x88 |
-| 0x18 | OUT | 2 (\|flag<<5) / page / 0 | program page (after 256-byte bulk OUT on EP 0x09) |
-| 0x18 | OUT | 3 or 0x33 / sector<<8 / 0 | erase sector |
-| 0x19 | IN | 0 / 0 / 4 | flash busy: poll until `(v & 3) == 0` |
+| 0x1C | IN | 0 / 0 / 4 | at enumeration, every RME device: `rev = word >> 16` = running USB/FPGA rev (O; live-confirmed) |
+| 0x18 | OUT | 1 / page / 0 | read page (I: followed by bulk IN 256 bytes on EP 0x88; live-confirmed returns version page) |
+| 0x18 | OUT | 2 (\|flag<<5) / page / 0 | program page (I: preceded by 256-byte bulk OUT on EP 0x09) |
+| 0x18 | OUT | 3 or 0x33 / sector<<8 / 0 | erase sector (I: no data, wIndex = sector<<8, then busy poll) |
+| 0x19 | IN | 0 / 0 / 4 | busy poll until `(v & 3) == 0` (O) |
 | 0x17 / 0x11 | OUT / IN | same opcodes / 16-byte status, busy = bit 30 | the older flash-engine family (other models) |
-| 0x1E, 0x1F | IN | 0 / 0 / 4 | two status words read together (another model's version path) |
-| 0x21 | OUT | 0xC,0xF,0xB,0xC,0x9,0x1 with 500 ms sleeps | control-line sequence during flashing (MCU/FPGA reset). DO NOT SEND |
+| 0x1E, 0x1F | IN | 0 / 0 / 4 | two 4-byte words read together; no direct caller found (unknown) |
+| 0x21 | OUT | 0xC,0xF,0xB,0xC,0x9,0x1 with 500 ms sleeps | sequence inside the flashing path; purpose unknown (reset/config is a guess). DO NOT SEND |
 
 ADI-2 Pro (PID 0x3FD2) version display (`FUN_10000b7f4` -> `FUN_10000d064(dev, 0x17FF)`):
 read page 0x17FF; little-endian dwords at byte 236 = fallback (second BIOS) USB rev,
 244 = USB/FPGA rev, 252 = DSP rev. The ADI-2/4 (0x3FDB) uses page 0x1BFF.
 Bundled versions in fut 09/2026: ADI-2 Pro FPGA 270 (EX 418), DSP 130.
+
+Unknown: interrupt EP 0x83 (nothing in the tool reads it); whether RME's Windows driver uses interface 3 for anything besides flashing; the low word of 0x1C.
+
+Reproduce: `tools/DecompAll.java` (Ghidra headless post-script) on the x86_64 slice of the Mac tool; outputs kept in gitignored `docs/fut/analysis/`.
 
 `tools/adi2_fw.py` implements only the two reads (0x1C; `--full` adds the page-0x17FF read).
 
@@ -58,9 +62,9 @@ page 0x17FF 256 bytes, all 0xFF except:
 
 - Two independent paths (EP0 0x1C and the flash page) both give FPGA 267, which confirms the decode.
 - Installed: **FPGA 267, DSP 128**, fallback BIOS 250. Current RME fut (09/2026): FPGA 270, DSP 130.
-  So this unit is two FPGA and two DSP revisions behind. Flashing needs the Windows/Mac fut (not done here).
+  Installed vs current: FPGA 267 vs 270, DSP 128 vs 130 (readme dates DSP 128 to 03/2024). Flashing needs RME's Windows/Mac tool; not done here.
 - After the probe the device kept the same USB address (no reset), interfaces 0/1/2/4 stayed on
   snd-usb-audio, interface 3 was released, MIDI status kept answering, no kernel log errors.
-- Low word of 0x1C (0x0103) is not decoded yet.
+- Rerun after the short-read fix gave identical values.
 
 Run again: `sudo python3 -I tools/adi2_fw.py [--full] [-v]` (no udev rule installed on purpose).

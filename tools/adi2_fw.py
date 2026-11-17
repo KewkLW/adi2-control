@@ -39,8 +39,16 @@ def find_dev():
 def ctrl(fd, rtype, req, val, idx, length=0, timeout=1000):
     buf = ctypes.create_string_buffer(max(length, 1))
     arg = struct.pack("<BBHHHI4xQ", rtype, req, val, idx, length, timeout, ctypes.addressof(buf))
-    n = fcntl.ioctl(fd, USBDEVFS_CONTROL, bytearray(arg))
-    return buf.raw[:length]
+    n = fcntl.ioctl(fd, USBDEVFS_CONTROL, bytearray(arg))  # returns bytes actually transferred
+    return buf.raw[:n]
+
+
+def ctrl_u32(fd, req):
+    """vendor IN read of exactly 4 bytes; a short reply is an error, never a zero value."""
+    raw = ctrl(fd, 0xC0, req, 0, 0, 4)
+    if len(raw) != 4:
+        raise IOError(f"request 0x{req:02X}: short reply ({len(raw)} bytes)")
+    return struct.unpack("<I", raw)[0]
 
 
 def bulk_in(fd, ep, length, timeout=2000):
@@ -64,8 +72,7 @@ def main():
     path = find_dev()
     fd = os.open(path, os.O_RDWR)
     try:
-        raw = ctrl(fd, 0xC0, 0x1C, 0, 0, 4)
-        w = struct.unpack("<I", raw)[0]
+        w = ctrl_u32(fd, 0x1C)
         print(f"device      {path}")
         print(f"req 0x1C    0x{w:08x}  -> USB/FPGA rev {w >> 16}  (low word 0x{w & 0xFFFF:04x})")
         if not full:
@@ -78,13 +85,16 @@ def main():
             ctrl(fd, 0x40, 0x18, 0x0001, 0x17FF, 0)  # read page 0x17FF
             t0 = time.time()
             while True:
-                s = struct.unpack("<I", ctrl(fd, 0xC0, 0x19, 0, 0, 4))[0]
+                raw = ctrl(fd, 0xC0, 0x19, 0, 0, 4)  # like fut: only a full 4-byte reply with busy bits clear counts as idle
+                s = struct.unpack("<I", raw)[0] if len(raw) == 4 else 3
                 if (s & 3) == 0:
                     break
                 if time.time() - t0 > 3:
                     sys.exit(f"busy poll timed out (0x19 = 0x{s:08x})")
                 time.sleep(0.0001)
             page = bulk_in(fd, EP_IN, 256)
+            if len(page) != 256:
+                sys.exit(f"short page read ({len(page)} bytes)")
         finally:
             fcntl.ioctl(fd, USBDEVFS_RELEASEINTERFACE, struct.pack("<I", IFACE))
         print(f"page 0x17FF {len(page)} bytes")
