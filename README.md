@@ -17,3 +17,6 @@ PipeWire setup used with it (Pro Audio + stereo "RME Phones 1/2" sink / "RME In 
 `~/.config/pipewire/pipewire.conf.d/50-rme-adi2-stereo.conf` (copies in `config/`).
 
 Notes: on this unit, the front knob drives `line.volume` (Phones 1/2 shares DA 1/2).
+
+Firmware revisions (read-only, vendor USB interface 3, needs root): `sudo python3 -I tools/adi2_fw.py --full`.
+RE notes on the ADI-2 Remote app and RME's flash tool: `re/FINDINGS.md`. Installer unpacker: `tools/unpack_capi.py`.
