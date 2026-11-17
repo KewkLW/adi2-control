@@ -219,8 +219,14 @@ class Dev:
 def read_all(dev):
     dev.send(0x03, [0x09])
     state, status = {}, None
-    for m in dev.messages():
-        if m[5] == 0x07: status = m
+    last_param = time.time()
+    for m in dev.messages(total=5.0):
+        if m[5] == 0x07:
+            status = m
+            # status arrives ~1/s and would keep the quiet timer alive forever
+            if state and time.time() - last_param > 0.4: break
+            continue
+        last_param = time.time()
         for addr, idx, raw, chan in dev.params(m):
             sc, n, v = to_human(addr, idx, raw, chan)
             state.setdefault(sc, {})[n] = v
@@ -267,6 +273,7 @@ def main(argv):
     if cmd == "dump":
         state, status = read_all(dev)
         if "--json" in args:
+            if status is not None: state["_status"] = decode_status(status)
             print(json.dumps(state, indent=1)); return
         for sc in SCOPES:
             if sc not in state: continue
