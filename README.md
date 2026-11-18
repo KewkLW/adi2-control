@@ -26,5 +26,7 @@ RE notes on the ADI-2 Remote app and RME's flash tool: `re/FINDINGS.md`. Install
 `adi2` talks to the ADI-2 Pro through the ALSA sequencer (libasound via Python ctypes, no extra
 packages), not the raw `/dev/snd/midiC*D0` device. It opens its own sequencer client `adi2`, finds
 the kernel client whose name contains "ADI-2 Pro", and subscribes to its port in both directions,
-so it works while a DAW such as Bitwig holds the same port. `aconnect -l` shows both clients while
-`adi2` runs. If the device is absent it prints one line and exits 1.
+so it shares the port with other sequencer clients (`aconnect -l` lists them). The device has one
+raw MIDI substream: a program that opens it directly (Bitwig does, as `hw:N,0,0`) holds it alone,
+and then `adi2` prints "cannot connect to ADI-2 Pro MIDI port" and exits 1. If the device is absent
+it prints one line and exits 1; if it is present but silent, "no reply from the device" and exit 1.
