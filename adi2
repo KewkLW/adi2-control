@@ -250,12 +250,14 @@ def raw_holder(card):
             pids = re.findall(r"Owner PID\s*:\s*(\d+)", f.read())
     except OSError:
         return None
-    for pid in dict.fromkeys(pids):
+    for tid in dict.fromkeys(pids):  # the kernel records the opening thread; name its process
         try:
+            with open(f"/proc/{tid}/status") as f:
+                pid = re.search(r"^Tgid:\s*(\d+)", f.read(), re.M).group(1)
             with open(f"/proc/{pid}/comm") as f:
                 return f"{f.read().strip()} (pid {pid})"
-        except OSError:
-            return f"pid {pid}"
+        except (OSError, AttributeError):
+            return f"pid {tid}"
     return None
 
 def raw_held_line(card):
