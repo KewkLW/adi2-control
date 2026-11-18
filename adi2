@@ -324,6 +324,8 @@ class Dev:
         body = msg[6:-1]
         return [decode_container(*body[i:i + 3]) for i in range(0, len(body) - 2, 3)]
 
+NO_REPLY = "no reply from the device (ADI-2 Pro MIDI port found, but it sent nothing)"
+
 def read_all(dev):
     dev.send(0x03, [0x09])
     state, status = {}, None
@@ -380,6 +382,7 @@ def main(argv):
     dev = Dev()
     if cmd == "dump":
         state, status = read_all(dev)
+        if not state: sys.exit(NO_REPLY)
         if "--json" in args:
             if status is not None: state["_status"] = decode_status(status)
             print(json.dumps(state, indent=1)); return
@@ -391,6 +394,7 @@ def main(argv):
             if sc not in SCOPES: print(f"[{sc}] {state[sc]}")
     elif cmd == "get":
         state, _ = read_all(dev)
+        if not state: sys.exit(NO_REPLY)
         for a in args:
             sc, n = a.split(".", 1)
             print(f"{a} = {state.get(sc, {}).get(n, '?')}")
@@ -422,7 +426,7 @@ def main(argv):
         for m in dev.messages(quiet=1.5, total=4):
             if m[5] == 0x07:
                 print(json.dumps(decode_status(m), indent=1)); return
-        sys.exit("no status message received")
+        sys.exit(NO_REPLY)
     elif cmd == "watch":
         dev.send(0x03, [0x09])
         seen = {}
