@@ -3,7 +3,8 @@
 K = known (read from RME's code, the bytes in its archive, or a live read on this unit).
 V = stated by RME in `readme FUT.rtf` of the 09/2026 archive (vendor claim, not tested here).
 I = inferred (from the Xilinx Spartan-6 MultiBoot design, RME's readme, or the code's shape; not
-tested on this unit). Nothing in this file has been tried on the device.
+tested on this unit). Nothing in this file has been tried on the device except the read-only
+read-back of 2026-11-17 (`re/READBACK-REPORT.md`); no write, erase or recovery step was.
 
 ## What the fallback BIOS is
 

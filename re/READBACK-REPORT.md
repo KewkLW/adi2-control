@@ -3,6 +3,13 @@
 Result: the main region on this unit is byte for byte the known-good 267/128 image set. Two full
 passes, identical. Zero differing bytes anywhere.
 
+## Scope
+
+"Main region" here is everything the updater writes: sectors 0x08..0x0F (FPGA), 0x10..0x13 (DSP) and
+0x17 (version block), all read in full. Not read: sectors 0x00..0x07 (fallback BIOS, never touched by
+this repo, not even as a read) and sectors 0x14..0x16 (not written by RME's tool for this model and
+not in the approved request list).
+
 ## What was run
 
 Approved request list: groups A, B and C exactly as in the bounty evidence `requests.md` (owner's
