@@ -132,7 +132,7 @@ commands above to regenerate it byte for byte except the timestamp line.
   added to the regions (checked by mutation on 2026-11-17).
 - `tools/adi2_fw.py` (older, unchanged) still has a generic `ctrl()`; this bounty does not use it.
 
-## 6. Read-back (hardware gate, not yet run)
+## 6. Read-back (hardware gate, done 2026-11-17)
 
 `tools/adi2_readback.py --groups A,B,C --out <dir>` reads each group twice and writes
 `pass{1,2}_{A,B,C}.bin` and `meta.json`. Groups: A = pages 0x0800..0x0FFF (FPGA), B = 0x1000..0x13FF
@@ -141,6 +141,7 @@ device. `adi2_flash.py compare <dir>` then reports, per group: pass 1 vs pass 2 
 bytes vs the 267/128 image (count and offset ranges of differences), and separately the tail bytes
 after the image that are expected to be 0xFF (an inference, reported but not a failure).
 
-Read page 0x18 wValue 1 has only ever been sent to this device with wIndex 0x17FF. Every other page
-is a request never sent before and needs the owner's yes; the request list for review is in the bounty
-evidence (`requests.md`). The match report goes in `re/READBACK-REPORT.md` once the read is done.
+Before this read, read page 0x18 wValue 1 had only been sent to this device with wIndex 0x17FF. The
+request list was reviewed and the other pages got the owner's yes (groups A, B, C) on 2026-11-17.
+Result in `re/READBACK-REPORT.md`: both passes identical, main region byte for byte equal to the
+267/128 images, zero differing bytes.

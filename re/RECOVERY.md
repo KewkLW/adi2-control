@@ -45,9 +45,10 @@ tested on this unit). Nothing in this file has been tried on the device.
    already loaded and the flash can be rewritten in place. (I)
 2. Read the version page (0x17FF) and 0x1C to see what is running. (K: both reads are proven safe)
 3. Rerun the failed image step from its erase: FPGA from the 267 or 270 image, DSP likewise. The
-   known-good 267/128 image set (sha256 in `re/FIRMWARE-UPDATE.md`) is the rollback target; it is
-   what the read-back compares against.
-4. Verify by full read-back of the region, then rewrite the version block.
+   known-good 267/128 image set (sha256 in `re/FIRMWARE-UPDATE.md`) is the rollback target. K: the
+   2026-11-17 read-back found it installed byte for byte on this unit (`re/READBACK-REPORT.md`).
+4. Verify by full read-back of the region (`tools/adi2_readback.py`, proven on this unit for all main
+   region pages), then rewrite the version block.
 5. If the device no longer enumerates after a power cycle: power it down, wait, power on once. If the
    golden image loads (I), it enumerates with the fallback USB rev (250 here) and the steps above
    apply. If it does not enumerate at all, stop: RME support. Do not attempt anything on sectors 0..7.
