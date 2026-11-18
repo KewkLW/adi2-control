@@ -1,0 +1,121 @@
+# EXCERPT of the dry-run packet log (full log: 26967 lines, regenerate with re/FIRMWARE-UPDATE.md section 4).
+# For every phase: its first 6 and last 3 packets. Lines starting '...' mark skipped packets.
+# tool: adi2_flash.py dry-run (simulation; no device opened)
+# target: ADI-2 Pro FPGA 270 / DSP 130, fallback rev kept 250
+# fpga_sha256: 2f125de0dac72527fdabaed64540e9d925f69c2382115b2d66db190101c0fb19
+# dsp_sha256: 014f70fa04a85ab5866dceb3ffc7cc7041acf05b7a50491c7b58b566431a8792
+seq	phase	op	bmRequestType	bRequest	wValue	wIndex	wLength	ep	flash_addr	sector	region	image_off	nbytes	payload_sha256	note
+1	pre	CTRL_IN	0xc0	0x1c	0x0000	0x0000	4				-				running USB/FPGA revision (enumeration read)
+2	pre	CTRL_OUT	0x40	0x18	0x0001	0x17ff	0		0x17ff00	0x17	version				read page
+3	pre	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x17ff00	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+4	pre	BULK_IN					256	0x88	0x17ff00	0x17	version				
+5	fpga:erase	CTRL_OUT	0x40	0x18	0x0003	0x0800	0		0x080000	0x08	fpga				erase sector
+6	fpga:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x080000	0x08	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+7	fpga:erase	CTRL_OUT	0x40	0x18	0x0003	0x0900	0		0x090000	0x09	fpga				erase sector
+8	fpga:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x090000	0x09	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+9	fpga:erase	CTRL_OUT	0x40	0x18	0x0003	0x0a00	0		0x0a0000	0x0a	fpga				erase sector
+10	fpga:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0a0000	0x0a	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+...	7 packets of fpga:erase skipped
+18	fpga:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0e0000	0x0e	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+19	fpga:erase	CTRL_OUT	0x40	0x18	0x0003	0x0f00	0		0x0f0000	0x0f	fpga				erase sector
+20	fpga:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0f0000	0x0f	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+21	fpga:blank	CTRL_OUT	0x40	0x18	0x0001	0x0800	0		0x080000	0x08	fpga				read page
+22	fpga:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x080000	0x08	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+23	fpga:blank	BULK_IN					256	0x88	0x080000	0x08	fpga				
+24	fpga:blank	CTRL_OUT	0x40	0x18	0x0001	0x0801	0		0x080100	0x08	fpga				read page
+25	fpga:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x080100	0x08	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+26	fpga:blank	BULK_IN					256	0x88	0x080100	0x08	fpga				
+...	5433 packets of fpga:blank skipped
+5460	fpga:blank	CTRL_OUT	0x40	0x18	0x0001	0x0f15	0		0x0f1500	0x0f	fpga				read page
+5461	fpga:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0f1500	0x0f	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+5462	fpga:blank	BULK_IN					256	0x88	0x0f1500	0x0f	fpga				
+5463	fpga:program	BULK_OUT					256	0x09	0x0f1500	0x0f	fpga	0x71500	256	0f67260975e34a9e5e7fe7d5bed056e619870b36a7198293818ce9c1e86a46f7	
+5464	fpga:program	CTRL_OUT	0x40	0x18	0x0002	0x0f15	0		0x0f1500	0x0f	fpga				program page from the bulk buffer
+5465	fpga:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0f1500	0x0f	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+5466	fpga:program	BULK_OUT					256	0x09	0x0f1400	0x0f	fpga	0x71400	256	ef308edd0189e258b8479918126b62c5f638afce97b72d9c2d35840c6e15a4d2	
+5467	fpga:program	CTRL_OUT	0x40	0x18	0x0002	0x0f14	0		0x0f1400	0x0f	fpga				program page from the bulk buffer
+5468	fpga:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0f1400	0x0f	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+...	5433 packets of fpga:program skipped
+10902	fpga:program	BULK_OUT					256	0x09	0x080000	0x08	fpga	0x00000	256	c5b010061553e5e819ea4b345154aca57c640695526e304485dcd95bd2277b1a	
+10903	fpga:program	CTRL_OUT	0x40	0x18	0x0002	0x0800	0		0x080000	0x08	fpga				program page from the bulk buffer
+10904	fpga:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x080000	0x08	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+10905	fpga:verify	CTRL_OUT	0x40	0x18	0x0001	0x0800	0		0x080000	0x08	fpga				read page
+10906	fpga:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x080000	0x08	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+10907	fpga:verify	BULK_IN					256	0x88	0x080000	0x08	fpga				
+10908	fpga:verify	CTRL_OUT	0x40	0x18	0x0001	0x0801	0		0x080100	0x08	fpga				read page
+10909	fpga:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x080100	0x08	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+10910	fpga:verify	BULK_IN					256	0x88	0x080100	0x08	fpga				
+...	5433 packets of fpga:verify skipped
+16344	fpga:verify	CTRL_OUT	0x40	0x18	0x0001	0x0f15	0		0x0f1500	0x0f	fpga				read page
+16345	fpga:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x0f1500	0x0f	fpga				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16346	fpga:verify	BULK_IN					256	0x88	0x0f1500	0x0f	fpga				
+16347	dsp:erase	CTRL_OUT	0x40	0x18	0x0003	0x1000	0		0x100000	0x10	dsp				erase sector
+16348	dsp:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x100000	0x10	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16349	dsp:erase	CTRL_OUT	0x40	0x18	0x0003	0x1100	0		0x110000	0x11	dsp				erase sector
+16350	dsp:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x110000	0x11	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16351	dsp:erase	CTRL_OUT	0x40	0x18	0x0003	0x1200	0		0x120000	0x12	dsp				erase sector
+16352	dsp:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x120000	0x12	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16353	dsp:erase	CTRL_OUT	0x40	0x18	0x0003	0x1300	0		0x130000	0x13	dsp				erase sector
+16354	dsp:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x130000	0x13	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16355	dsp:blank	CTRL_OUT	0x40	0x18	0x0001	0x1000	0		0x100000	0x10	dsp				read page
+16356	dsp:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x100000	0x10	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16357	dsp:blank	BULK_IN					256	0x88	0x100000	0x10	dsp				
+16358	dsp:blank	CTRL_OUT	0x40	0x18	0x0001	0x1001	0		0x100100	0x10	dsp				read page
+16359	dsp:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x100100	0x10	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+16360	dsp:blank	BULK_IN					256	0x88	0x100100	0x10	dsp				
+...	2760 packets of dsp:blank skipped
+19121	dsp:blank	CTRL_OUT	0x40	0x18	0x0001	0x139a	0		0x139a00	0x13	dsp				read page
+19122	dsp:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x139a00	0x13	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+19123	dsp:blank	BULK_IN					256	0x88	0x139a00	0x13	dsp				
+19124	dsp:program	BULK_OUT					256	0x09	0x139a00	0x13	dsp	0x39a00	256	b55328f0c6965cbeb41aab3c96f10686a8f71b7488b3d28b9b9997757475315f	
+19125	dsp:program	CTRL_OUT	0x40	0x18	0x0002	0x139a	0		0x139a00	0x13	dsp				program page from the bulk buffer
+19126	dsp:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x139a00	0x13	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+19127	dsp:program	BULK_OUT					256	0x09	0x139900	0x13	dsp	0x39900	256	8fc9b011a1188fc6f0f68d2d8cd2bb326de0d435008d8230bf1eaab47b538bf1	
+19128	dsp:program	CTRL_OUT	0x40	0x18	0x0002	0x1399	0		0x139900	0x13	dsp				program page from the bulk buffer
+19129	dsp:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x139900	0x13	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+...	2760 packets of dsp:program skipped
+21890	dsp:program	BULK_OUT					256	0x09	0x100000	0x10	dsp	0x00000	256	6eed14d5270185dab9d788686b6bd2fc95eb9b17f4d56c1e1272ef5020138d65	
+21891	dsp:program	CTRL_OUT	0x40	0x18	0x0002	0x1000	0		0x100000	0x10	dsp				program page from the bulk buffer
+21892	dsp:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x100000	0x10	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+21893	dsp:verify	CTRL_OUT	0x40	0x18	0x0001	0x1000	0		0x100000	0x10	dsp				read page
+21894	dsp:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x100000	0x10	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+21895	dsp:verify	BULK_IN					256	0x88	0x100000	0x10	dsp				
+21896	dsp:verify	CTRL_OUT	0x40	0x18	0x0001	0x1001	0		0x100100	0x10	dsp				read page
+21897	dsp:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x100100	0x10	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+21898	dsp:verify	BULK_IN					256	0x88	0x100100	0x10	dsp				
+...	2760 packets of dsp:verify skipped
+24659	dsp:verify	CTRL_OUT	0x40	0x18	0x0001	0x139a	0		0x139a00	0x13	dsp				read page
+24660	dsp:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x139a00	0x13	dsp				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+24661	dsp:verify	BULK_IN					256	0x88	0x139a00	0x13	dsp				
+24662	version:erase	CTRL_OUT	0x40	0x18	0x0003	0x1700	0		0x170000	0x17	version				erase sector
+24663	version:erase	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x170000	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+24664	version:blank	CTRL_OUT	0x40	0x18	0x0001	0x1700	0		0x170000	0x17	version				read page
+24665	version:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x170000	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+24666	version:blank	BULK_IN					256	0x88	0x170000	0x17	version				
+24667	version:blank	CTRL_OUT	0x40	0x18	0x0001	0x1701	0		0x170100	0x17	version				read page
+24668	version:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x170100	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+24669	version:blank	BULK_IN					256	0x88	0x170100	0x17	version				
+...	759 packets of version:blank skipped
+25429	version:blank	CTRL_OUT	0x40	0x18	0x0001	0x17ff	0		0x17ff00	0x17	version				read page
+25430	version:blank	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x17ff00	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+25431	version:blank	BULK_IN					256	0x88	0x17ff00	0x17	version				
+25432	version:program	BULK_OUT					256	0x09	0x17ff00	0x17	version	0x0ff00	256	5e876b823292485e7bbbf14cb0a2910dd68fe2b35f857235a14ea550f54b5cce	
+25433	version:program	CTRL_OUT	0x40	0x18	0x0002	0x17ff	0		0x17ff00	0x17	version				program page from the bulk buffer
+25434	version:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x17ff00	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+25435	version:program	BULK_OUT					256	0x09	0x17fe00	0x17	version	0x0fe00	256	3d6876a0146de8576eb2395a858de1213d1b92c65b779df3a331cfd5a4584546	
+25436	version:program	CTRL_OUT	0x40	0x18	0x0002	0x17fe	0		0x17fe00	0x17	version				program page from the bulk buffer
+25437	version:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x17fe00	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+...	759 packets of version:program skipped
+26197	version:program	BULK_OUT					256	0x09	0x170000	0x17	version	0x00000	256	3d6876a0146de8576eb2395a858de1213d1b92c65b779df3a331cfd5a4584546	
+26198	version:program	CTRL_OUT	0x40	0x18	0x0002	0x1700	0		0x170000	0x17	version				program page from the bulk buffer
+26199	version:program	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x170000	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+26200	version:verify	CTRL_OUT	0x40	0x18	0x0001	0x1700	0		0x170000	0x17	version				read page
+26201	version:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x170000	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+26202	version:verify	BULK_IN					256	0x88	0x170000	0x17	version				
+26203	version:verify	CTRL_OUT	0x40	0x18	0x0001	0x1701	0		0x170100	0x17	version				read page
+26204	version:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x170100	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+26205	version:verify	BULK_IN					256	0x88	0x170100	0x17	version				
+...	759 packets of version:verify skipped
+26965	version:verify	CTRL_OUT	0x40	0x18	0x0001	0x17ff	0		0x17ff00	0x17	version				read page
+26966	version:verify	CTRL_IN	0xc0	0x19	0x0000	0x0000	4		0x17ff00	0x17	version				busy poll: 100 us sleep, repeat until (v & 3) == 0, max 100000 tries
+26967	version:verify	BULK_IN					256	0x88	0x17ff00	0x17	version				
