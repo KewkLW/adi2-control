@@ -2,7 +2,7 @@
 """adi2: control an RME ADI-2 Pro over its USB MIDI port (RME SysEx protocol v1.2).
 
 Protocol: docs/proto/MIDITable_ADI-2_261030.ods (RME, "MIDI-Protocol for RME ADI-2 DAC,
-ADI-2 Pro and ADI-2/4 Pro SE/EX"). Stdlib only, talks to /dev/snd/midiC*D0 directly.
+ADI-2 Pro and ADI-2/4 Pro SE/EX"). Stdlib + libasound (ctypes), talks to the ALSA sequencer port.
 
   adi2 dump [--json]          every setting, decoded
   adi2 get ph12.volume        one setting (scope.param)
@@ -13,7 +13,7 @@ ADI-2 Pro and ADI-2/4 Pro SE/EX"). Stdlib only, talks to /dev/snd/midiC*D0 direc
   adi2 preset load|save N     device setups 1..9 (save overwrites that slot)
   adi2 raw F0 ... F7          send raw SysEx, print replies
 """
-import glob, json, os, re, select, sys, time
+import ctypes, ctypes.util, json, re, select, sys, time
 
 VENDOR = [0x00, 0x20, 0x0D]
 DEV_ID = 0x72  # ADI-2 Pro
@@ -170,24 +170,132 @@ def from_human(scope, name, text):
         raw = int(t, 0) & 0xFFF
     return addr, idx, raw, kind
 
-# ---------------------------------------------------------------- MIDI I/O
-def find_port():
-    for path in glob.glob("/proc/asound/card*/id"):
-        card = path.split("/")[3][4:]
-        name = open(f"/proc/asound/card{card}/../cards").read()
-        line = [l for l in name.splitlines() if re.match(rf"\s*{card}\s", l)]
-        if line and "ADI-2 Pro" in line[0] and os.path.exists(f"/dev/snd/midiC{card}D0"):
-            return f"/dev/snd/midiC{card}D0"
+# ---------------------------------------------------------------- MIDI I/O (ALSA sequencer)
+# Talks to the ADI-2 Pro's sequencer port through libasound (ctypes), so it shares the port with
+# a DAW instead of needing exclusive use of the raw MIDI device.
+DEVICE_NAME = "ADI-2 Pro"
+SEQ_EVENT_NONE, SEQ_QUEUE_DIRECT, SEQ_ADDRESS_SUBSCRIBERS, SEQ_ADDRESS_UNKNOWN = 255, 253, 254, 253
+SEQ_OPEN_DUPLEX, SEQ_NONBLOCK, SEQ_KERNEL_CLIENT = 3, 1, 2
+CAP_READ, CAP_WRITE, CAP_SUBS_READ, CAP_SUBS_WRITE = 1, 2, 0x20, 0x40
+PORT_TYPE_MIDI_GENERIC, PORT_TYPE_APPLICATION = 1 << 1, 1 << 20
+EAGAIN, ENOSPC = 11, 28
+
+class SeqEvent(ctypes.Structure):  # snd_seq_event_t, 28 bytes (alsa/seq_event.h)
+    _fields_ = [("type", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("tag", ctypes.c_ubyte),
+                ("queue", ctypes.c_ubyte), ("time", ctypes.c_ubyte * 8),
+                ("src_client", ctypes.c_ubyte), ("src_port", ctypes.c_ubyte),
+                ("dst_client", ctypes.c_ubyte), ("dst_port", ctypes.c_ubyte),
+                ("data", ctypes.c_ubyte * 12)]
+assert ctypes.sizeof(SeqEvent) == 28
+
+class PollFd(ctypes.Structure):
+    _fields_ = [("fd", ctypes.c_int), ("events", ctypes.c_short), ("revents", ctypes.c_short)]
+
+_ERR_HANDLER = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+_quiet = _ERR_HANDLER(lambda *a: None)  # keep a reference: libasound holds the pointer
+
+def libasound():
+    try:
+        lib = ctypes.CDLL(ctypes.util.find_library("asound") or "libasound.so.2")
+    except OSError:
+        sys.exit("libasound (alsa-lib) not found; adi2 needs it for the ALSA sequencer")
+    lib.snd_lib_error_set_handler(_quiet)  # no "ALSA lib ..." noise on stderr
+    P, I = ctypes.c_void_p, ctypes.c_int
+    for name, res, args in [
+        ("snd_seq_open", I, [ctypes.POINTER(P), ctypes.c_char_p, I, I]),
+        ("snd_seq_set_client_name", I, [P, ctypes.c_char_p]),
+        ("snd_seq_create_simple_port", I, [P, ctypes.c_char_p, ctypes.c_uint, ctypes.c_uint]),
+        ("snd_seq_connect_from", I, [P, I, I, I]), ("snd_seq_connect_to", I, [P, I, I, I]),
+        ("snd_seq_poll_descriptors", I, [P, ctypes.POINTER(PollFd), ctypes.c_uint, ctypes.c_short]),
+        ("snd_seq_event_input", I, [P, ctypes.POINTER(ctypes.POINTER(SeqEvent))]),
+        ("snd_seq_event_output_direct", I, [P, ctypes.POINTER(SeqEvent)]),
+        ("snd_seq_client_info_malloc", I, [ctypes.POINTER(P)]), ("snd_seq_port_info_malloc", I, [ctypes.POINTER(P)]),
+        ("snd_seq_client_info_set_client", None, [P, I]), ("snd_seq_client_info_get_client", I, [P]),
+        ("snd_seq_client_info_get_name", ctypes.c_char_p, [P]), ("snd_seq_client_info_get_type", I, [P]),
+        ("snd_seq_query_next_client", I, [P, P]),
+        ("snd_seq_port_info_set_client", None, [P, I]), ("snd_seq_port_info_set_port", None, [P, I]),
+        ("snd_seq_port_info_get_port", I, [P]), ("snd_seq_port_info_get_capability", ctypes.c_uint, [P]),
+        ("snd_seq_query_next_port", I, [P, P]),
+        ("snd_midi_event_new", I, [ctypes.c_size_t, ctypes.POINTER(P)]),
+        ("snd_midi_event_no_status", None, [P, I]),
+        ("snd_midi_event_encode", ctypes.c_long, [P, ctypes.c_char_p, ctypes.c_long, ctypes.POINTER(SeqEvent)]),
+        ("snd_midi_event_decode", ctypes.c_long, [P, ctypes.c_char_p, ctypes.c_long, ctypes.POINTER(SeqEvent)]),
+        ("snd_strerror", ctypes.c_char_p, [I]),
+    ]:
+        f = getattr(lib, name); f.restype, f.argtypes = res, args
+    return lib
+
+def find_port(lib, seq):
+    """(client, port) of the ADI-2 Pro's MIDI port: a kernel (card) client, port 0 = midiC*D0."""
+    ci, pi = ctypes.c_void_p(), ctypes.c_void_p()
+    lib.snd_seq_client_info_malloc(ctypes.byref(ci)); lib.snd_seq_port_info_malloc(ctypes.byref(pi))
+    lib.snd_seq_client_info_set_client(ci, -1)
+    want = CAP_READ | CAP_WRITE | CAP_SUBS_READ | CAP_SUBS_WRITE
+    while lib.snd_seq_query_next_client(seq, ci) >= 0:
+        name = (lib.snd_seq_client_info_get_name(ci) or b"").decode(errors="replace")
+        if DEVICE_NAME not in name or lib.snd_seq_client_info_get_type(ci) != SEQ_KERNEL_CLIENT:
+            continue
+        client = lib.snd_seq_client_info_get_client(ci)
+        lib.snd_seq_port_info_set_client(pi, client); lib.snd_seq_port_info_set_port(pi, -1)
+        while lib.snd_seq_query_next_port(seq, pi) >= 0:
+            if lib.snd_seq_port_info_get_capability(pi) & want == want:
+                return client, lib.snd_seq_port_info_get_port(pi)
     sys.exit("ADI-2 Pro MIDI port not found (is it plugged in and powered?)")
 
 class Dev:
     def __init__(self):
-        self.fd = os.open(find_port(), os.O_RDWR | os.O_NONBLOCK)
+        lib = self.lib = libasound()
+        err = lambda e: lib.snd_strerror(e).decode(errors="replace")
+        self.seq = ctypes.c_void_p()
+        e = lib.snd_seq_open(ctypes.byref(self.seq), b"default", SEQ_OPEN_DUPLEX, SEQ_NONBLOCK)
+        if e < 0: sys.exit(f"cannot open the ALSA sequencer: {err(e)}")
+        lib.snd_seq_set_client_name(self.seq, b"adi2")
+        self.addr = find_port(lib, self.seq)
+        self.port = lib.snd_seq_create_simple_port(self.seq, b"adi2", CAP_READ | CAP_WRITE,
+                                                   PORT_TYPE_MIDI_GENERIC | PORT_TYPE_APPLICATION)
+        if self.port < 0: sys.exit(f"cannot create a sequencer port: {err(self.port)}")
+        for connect in (lib.snd_seq_connect_from, lib.snd_seq_connect_to):
+            e = connect(self.seq, self.port, *self.addr)
+            if e < 0: sys.exit(f"cannot connect to ADI-2 Pro MIDI port {self.addr[0]}:{self.addr[1]}: {err(e)}")
+        pfd = PollFd()
+        if lib.snd_seq_poll_descriptors(self.seq, ctypes.byref(pfd), 1, select.POLLIN) != 1:
+            sys.exit("cannot get the ALSA sequencer poll descriptor")
+        self.fd = pfd.fd
+        self.enc, self.dec = ctypes.c_void_p(), ctypes.c_void_p()
+        lib.snd_midi_event_new(4096, ctypes.byref(self.enc)); lib.snd_midi_event_new(16, ctypes.byref(self.dec))
+        lib.snd_midi_event_no_status(self.dec, 1)
+        self.dbuf = ctypes.create_string_buffer(65536)
         self.buf = bytearray()
 
+    def write(self, data):
+        """send raw MIDI bytes to the device (encoded into sequencer events)."""
+        data = bytes(data)
+        while data:
+            ev = SeqEvent()
+            n = self.lib.snd_midi_event_encode(self.enc, data, len(data), ctypes.byref(ev))
+            if n <= 0: break
+            data = data[n:]
+            if ev.type == SEQ_EVENT_NONE: continue  # incomplete message, encoder wants more bytes
+            ev.queue = SEQ_QUEUE_DIRECT
+            ev.src_port = self.port
+            ev.dst_client, ev.dst_port = SEQ_ADDRESS_SUBSCRIBERS, SEQ_ADDRESS_UNKNOWN
+            e = self.lib.snd_seq_event_output_direct(self.seq, ctypes.byref(ev))
+            if e < 0: sys.exit(f"MIDI send to ADI-2 Pro failed: {self.lib.snd_strerror(e).decode(errors='replace')}")
+
     def send(self, cmd, payload=()):
-        msg = bytes([0xF0, *VENDOR, DEV_ID, cmd, *payload, 0xF7])
-        os.write(self.fd, msg)
+        self.write([0xF0, *VENDOR, DEV_ID, cmd, *payload, 0xF7])
+
+    def read(self):
+        """drain every pending sequencer event from the device into self.buf as MIDI bytes."""
+        evp = ctypes.POINTER(SeqEvent)()
+        while True:
+            e = self.lib.snd_seq_event_input(self.seq, ctypes.byref(evp))
+            if e == -ENOSPC: continue  # input overrun: events were dropped, keep reading
+            if e < 0: return  # -EAGAIN: nothing left
+            ev = evp.contents
+            if (ev.src_client, ev.src_port) != self.addr: continue
+            n = self.lib.snd_midi_event_decode(self.dec, self.dbuf, len(self.dbuf), evp)
+            if n > 0: self.buf += self.dbuf.raw[:n]
 
     def messages(self, quiet=1.2, total=8.0, forever=False):
         """yield complete SysEx messages until `quiet` s of silence (or forever)."""
@@ -200,7 +308,7 @@ class Dev:
             if not r:
                 if forever: continue
                 return
-            self.buf += os.read(self.fd, 4096)
+            self.read()
             last = time.time()
             while True:
                 s = self.buf.find(0xF0)
@@ -335,7 +443,7 @@ def main(argv):
         dev.send(0x04, [0x13]); print("factory settings loaded")
     elif cmd == "raw":
         b = bytes(int(x, 16) for x in args)
-        os.write(dev.fd, b)
+        dev.write(b)
         for m in dev.messages(): print(m.hex(" ").upper())
     else:
         sys.exit(f"unknown command {cmd}\n{__doc__}")

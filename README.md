@@ -20,3 +20,11 @@ Notes: on this unit, the front knob drives `line.volume` (Phones 1/2 shares DA 1
 
 Firmware revisions (read-only, vendor USB interface 3, needs root): `sudo python3 -I tools/adi2_fw.py --full`.
 RE notes on the ADI-2 Remote app and RME's flash tool: `re/FINDINGS.md`. Installer unpacker: `tools/unpack_capi.py`.
+
+## MIDI access
+
+`adi2` talks to the ADI-2 Pro through the ALSA sequencer (libasound via Python ctypes, no extra
+packages), not the raw `/dev/snd/midiC*D0` device. It opens its own sequencer client `adi2`, finds
+the kernel client whose name contains "ADI-2 Pro", and subscribes to its port in both directions,
+so it works while a DAW such as Bitwig holds the same port. `aconnect -l` shows both clients while
+`adi2` runs. If the device is absent it prints one line and exits 1.
