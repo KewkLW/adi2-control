@@ -178,7 +178,7 @@ SEQ_EVENT_NONE, SEQ_QUEUE_DIRECT, SEQ_ADDRESS_SUBSCRIBERS, SEQ_ADDRESS_UNKNOWN =
 SEQ_OPEN_DUPLEX, SEQ_NONBLOCK, SEQ_KERNEL_CLIENT = 3, 1, 2
 CAP_READ, CAP_WRITE, CAP_SUBS_READ, CAP_SUBS_WRITE = 1, 2, 0x20, 0x40
 PORT_TYPE_MIDI_GENERIC, PORT_TYPE_APPLICATION = 1 << 1, 1 << 20
-EAGAIN, ENOSPC = 11, 28
+EAGAIN, EBUSY, ENOSPC = 11, 16, 28
 
 class SeqEvent(ctypes.Structure):  # snd_seq_event_t, 28 bytes (alsa/seq_event.h)
     _fields_ = [("type", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("tag", ctypes.c_ubyte),
@@ -212,6 +212,7 @@ def libasound():
         ("snd_seq_client_info_malloc", I, [ctypes.POINTER(P)]), ("snd_seq_port_info_malloc", I, [ctypes.POINTER(P)]),
         ("snd_seq_client_info_set_client", None, [P, I]), ("snd_seq_client_info_get_client", I, [P]),
         ("snd_seq_client_info_get_name", ctypes.c_char_p, [P]), ("snd_seq_client_info_get_type", I, [P]),
+        ("snd_seq_client_info_get_card", I, [P]),
         ("snd_seq_query_next_client", I, [P, P]),
         ("snd_seq_port_info_set_client", None, [P, I]), ("snd_seq_port_info_set_port", None, [P, I]),
         ("snd_seq_port_info_get_port", I, [P]), ("snd_seq_port_info_get_capability", ctypes.c_uint, [P]),
@@ -226,7 +227,7 @@ def libasound():
     return lib
 
 def find_port(lib, seq):
-    """(client, port) of the ADI-2 Pro's MIDI port: a kernel (card) client, port 0 = midiC*D0."""
+    """(client, port, card) of the ADI-2 Pro's MIDI port: a kernel (card) client, port 0 = midiC*D0."""
     ci, pi = ctypes.c_void_p(), ctypes.c_void_p()
     lib.snd_seq_client_info_malloc(ctypes.byref(ci)); lib.snd_seq_port_info_malloc(ctypes.byref(pi))
     lib.snd_seq_client_info_set_client(ci, -1)
@@ -239,8 +240,29 @@ def find_port(lib, seq):
         lib.snd_seq_port_info_set_client(pi, client); lib.snd_seq_port_info_set_port(pi, -1)
         while lib.snd_seq_query_next_port(seq, pi) >= 0:
             if lib.snd_seq_port_info_get_capability(pi) & want == want:
-                return client, lib.snd_seq_port_info_get_port(pi)
+                return client, lib.snd_seq_port_info_get_port(pi), lib.snd_seq_client_info_get_card(ci)
     sys.exit("ADI-2 Pro MIDI port not found (is it plugged in and powered?)")
+
+def raw_holder(card):
+    """'<comm> (pid N)' of the process holding the card's raw MIDI port, from /proc/asound, or None."""
+    try:
+        with open(f"/proc/asound/card{card}/midi0") as f:
+            pids = re.findall(r"Owner PID\s*:\s*(\d+)", f.read())
+    except OSError:
+        return None
+    for pid in dict.fromkeys(pids):
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                return f"{f.read().strip()} (pid {pid})"
+        except OSError:
+            return f"pid {pid}"
+    return None
+
+def raw_held_line(card):
+    holder = raw_holder(card) if card >= 0 else None
+    who = holder or "another program"
+    hw = f" (hw:{card},0,0)" if card >= 0 else ""
+    return f"the ADI-2 Pro MIDI port{hw} is held as raw MIDI by {who}; close it or free the port in that program"
 
 class Dev:
     def __init__(self):
@@ -250,12 +272,14 @@ class Dev:
         e = lib.snd_seq_open(ctypes.byref(self.seq), b"default", SEQ_OPEN_DUPLEX, SEQ_NONBLOCK)
         if e < 0: sys.exit(f"cannot open the ALSA sequencer: {err(e)}")
         lib.snd_seq_set_client_name(self.seq, b"adi2")
-        self.addr = find_port(lib, self.seq)
+        *addr, self.card = find_port(lib, self.seq)
+        self.addr = tuple(addr)
         self.port = lib.snd_seq_create_simple_port(self.seq, b"adi2", CAP_READ | CAP_WRITE,
                                                    PORT_TYPE_MIDI_GENERIC | PORT_TYPE_APPLICATION)
         if self.port < 0: sys.exit(f"cannot create a sequencer port: {err(self.port)}")
         for connect in (lib.snd_seq_connect_from, lib.snd_seq_connect_to):
             e = connect(self.seq, self.port, *self.addr)
+            if e in (-EAGAIN, -EBUSY): sys.exit(raw_held_line(self.card))  # a raw MIDI open owns the substream
             if e < 0: sys.exit(f"cannot connect to ADI-2 Pro MIDI port {self.addr[0]}:{self.addr[1]}: {err(e)}")
         pfd = PollFd()
         if lib.snd_seq_poll_descriptors(self.seq, ctypes.byref(pfd), 1, select.POLLIN) != 1:

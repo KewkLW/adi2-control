@@ -28,5 +28,5 @@ packages), not the raw `/dev/snd/midiC*D0` device. It opens its own sequencer cl
 the kernel client whose name contains "ADI-2 Pro", and subscribes to its port in both directions,
 so it shares the port with other sequencer clients (`aconnect -l` lists them). The device has one
 raw MIDI substream: a program that opens it directly (Bitwig does, as `hw:N,0,0`) holds it alone,
-and then `adi2` prints "cannot connect to ADI-2 Pro MIDI port" and exits 1. If the device is absent
+and then `adi2` prints one line naming the holder (from `/proc/asound/cardN/midi0`) and exits 1. If the device is absent
 it prints one line and exits 1; if it is present but silent, "no reply from the device" and exit 1.
