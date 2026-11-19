@@ -19,6 +19,16 @@ PipeWire setup used with it (Pro Audio + stereo "RME Phones 1/2" sink / "RME In 
 Notes: on this unit, the front knob drives `line.volume` (Phones 1/2 shares DA 1/2).
 
 Firmware revisions (read-only, vendor USB interface 3, needs root): `sudo python3 -I tools/adi2_fw.py --full`.
+
+## Firmware updater (not working yet, for contributors only)
+
+The firmware updater in `tools/adi2_flash.py` and `tools/adi2_readback.py` is **not a working
+updater**. It is unfinished research shared for contributors who want to help with it, not a tool
+for updating your unit. Today it can download and check RME's flash tool, extract the firmware
+images, read the flash back (read-only), and *simulate* the full write sequence into a log. It
+**cannot flash a device**: nothing in this repo sends a write or erase request, and that stays so
+until the write path is finished and tested. To update your ADI-2 Pro, use RME's official flash
+tool. Details, status and the recovery plan: `re/FIRMWARE-UPDATE.md`, `re/RECOVERY.md`.
 RE notes on the ADI-2 Remote app and RME's flash tool: `re/FINDINGS.md`. Installer unpacker: `tools/unpack_capi.py`.
 
 ## MIDI access

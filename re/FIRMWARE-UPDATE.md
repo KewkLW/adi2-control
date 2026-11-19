@@ -1,8 +1,10 @@
 # ADI-2 Pro firmware updater: sources, images, simulated write (2026-11-17)
 
-Status: simulation only. Nothing in this repo can program, erase or send an unknown vendor OUT
-request to the device. The fallback BIOS region (sectors 0x00..0x07) is named nowhere in the
-updater, not even as a read. The real flash is a later bounty and needs the owner's go.
+Status: **not working yet, for contributors only.** This is unfinished research, not an updater
+for end users; use RME's official flash tool to update a unit. Simulation only: nothing in this
+repo can program, erase or send an unknown vendor OUT request to the device. The fallback BIOS
+region (sectors 0x00..0x07) is named nowhere in the updater, not even as a read. A real write path
+is future work and will only be added after it has been tested.
 
 Tools:
 

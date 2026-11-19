@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """adi2_flash: offline side of an RME ADI-2 Pro firmware updater (simulation only).
 
+NOT WORKING YET, FOR CONTRIBUTORS ONLY: unfinished research, it cannot flash a device. Use RME's
+official flash tool to update a unit. See re/FIRMWARE-UPDATE.md.
+
   fetch    download RME's flash tool archive (official, or a pinned Wayback copy), check size + sha256
   extract  pull the ADI-2 Pro FPGA and DSP images out of a pinned archive; record sizes + sha256
   dry-run  build the complete write sequence for the bundled images, packet by packet, into a log
