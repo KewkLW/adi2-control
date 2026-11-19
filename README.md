@@ -29,4 +29,5 @@ the kernel client whose name contains "ADI-2 Pro", and subscribes to its port in
 so it shares the port with other sequencer clients (`aconnect -l` lists them). The device has one
 raw MIDI substream: a program that opens it directly (Bitwig does, as `hw:N,0,0`) holds it alone,
 and then `adi2` prints one line naming the holder (from `/proc/asound/cardN/midi0`) and exits 1. If the device is absent
-it prints one line and exits 1; if it is present but silent, "no reply from the device" and exit 1.
+it prints one line and exits 1; if it is present but silent, "no reply from the device" and exit 1. For tests only, `ADI2_SEQ_PORT=client:port`
+(for example `14:0`, Midi Through) points it at a virtual sequencer port instead of the device.
