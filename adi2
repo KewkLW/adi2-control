@@ -13,7 +13,7 @@ ADI-2 Pro and ADI-2/4 Pro SE/EX"). Stdlib + libasound (ctypes), talks to the ALS
   adi2 preset load|save N     device setups 1..9 (save overwrites that slot)
   adi2 raw F0 ... F7          send raw SysEx, print replies
 """
-import ctypes, ctypes.util, json, re, select, sys, time
+import ctypes, ctypes.util, json, os, re, select, sys, time
 
 VENDOR = [0x00, 0x20, 0x0D]
 DEV_ID = 0x72  # ADI-2 Pro
@@ -228,6 +228,11 @@ def libasound():
 
 def find_port(lib, seq):
     """(client, port, card) of the ADI-2 Pro's MIDI port: a kernel (card) client, port 0 = midiC*D0."""
+    test = os.environ.get("ADI2_SEQ_PORT")  # test only: "client:port" of a virtual port (e.g. 14:0)
+    if test:
+        m = re.fullmatch(r"(\d+):(\d+)", test.strip())
+        if not m: sys.exit(f"ADI2_SEQ_PORT must be client:port (for example 14:0), not '{test}'")
+        return int(m.group(1)), int(m.group(2)), -1
     ci, pi = ctypes.c_void_p(), ctypes.c_void_p()
     lib.snd_seq_client_info_malloc(ctypes.byref(ci)); lib.snd_seq_port_info_malloc(ctypes.byref(pi))
     lib.snd_seq_client_info_set_client(ci, -1)
