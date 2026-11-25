@@ -80,9 +80,14 @@ Examples in this repo:
 
 Your own profiles live in `~/.config/adi2/profiles/` and take priority over the examples.
 
-**Profiles never make anything louder by default.** They save routing and mode only. Volumes,
-reference levels, mute and dim are saved only when you ask for them with `--with-levels`, and even
-then loading a profile will not raise a phones volume by more than 6 dB in one step.
+**Profiles leave your levels alone by default.** They save routing and mode only. Volumes, reference
+levels, mute, dim and the "mute line outs when phones are plugged in" switches are saved only when
+you ask for them with `--with-levels`, and even then loading a profile will not raise a phones volume
+by more than 6 dB in one step. Routing still matters: switching the line outputs to a hot source plays
+that source at the current volume, so check the volume before you load one with something playing.
+
+After loading, `adi2` reads every setting in the profile back from the unit, applies any that did not
+stick once more, and exits with code 1 if something still does not match.
 
 ## Things we learned the hard way
 
