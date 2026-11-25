@@ -94,8 +94,11 @@ stick once more, and exits with code 1 if something still does not match.
 
 - **The line outputs can only take the analog input in Basic Mode AD/DA.** In Basic Mode USB the unit
   quietly keeps `line.source` on `auto` and ignores the change. `adi2 set` reads every setting back,
-  so you will see it did not take. The profiles set `device.basic_mode` first and give it a moment
-  before anything else, for this reason.
+  so you will see it did not take. The profiles set `device.basic_mode` first for this reason.
+- **Changing Basic Mode makes the unit drop off USB and reconnect** (a second or two). All its audio
+  stops for that moment and it comes back as a new ALSA device, so switch profiles between sets, not
+  mid song. `adi2 profile load` waits for the unit to come back and reconnects before it applies the
+  rest of the profile.
 - **Set `input.ad_conversion` to `pcm`.** With it on `dsd`, the computer records pure digital silence
   from the analog input, even with a signal present.
 - **Only one program can hold the unit's raw MIDI port.** Some DAWs (Bitwig, for one) open

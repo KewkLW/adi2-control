@@ -228,6 +228,7 @@ def libasound():
         ("snd_midi_event_encode", ctypes.c_long, [P, ctypes.c_char_p, ctypes.c_long, ctypes.POINTER(SeqEvent)]),
         ("snd_midi_event_decode", ctypes.c_long, [P, ctypes.c_char_p, ctypes.c_long, ctypes.POINTER(SeqEvent)]),
         ("snd_strerror", ctypes.c_char_p, [I]),
+        ("snd_seq_close", I, [P]),
     ]:
         f = getattr(lib, name); f.restype, f.argtypes = res, args
     return lib
@@ -318,6 +319,9 @@ class Dev:
             ev.dst_client, ev.dst_port = SEQ_ADDRESS_SUBSCRIBERS, SEQ_ADDRESS_UNKNOWN
             e = self.lib.snd_seq_event_output_direct(self.seq, ctypes.byref(ev))
             if e < 0: sys.exit(f"MIDI send to ADI-2 Pro failed: {self.lib.snd_strerror(e).decode(errors='replace')}")
+
+    def close(self):
+        if self.seq: self.lib.snd_seq_close(self.seq); self.seq = None
 
     def send(self, cmd, payload=()):
         self.write([0xF0, *VENDOR, DEV_ID, cmd, *payload, 0xF7])
@@ -434,6 +438,22 @@ def profile_path(name, write=False):
     if os.path.exists(ex): return ex
     sys.exit(f"no profile {name!r} (adi2 profile list)")
 
+def reconnect(old, wait=20.0):
+    """A basic_mode change makes the unit drop off USB and come back as a new ALSA client, so the old
+    sequencer connection points at a port that is gone. Reopen until the unit answers again."""
+    old.close()
+    end = time.time() + wait
+    time.sleep(1.0)
+    while time.time() < end:
+        try:
+            dev = Dev()
+        except SystemExit:
+            time.sleep(0.5); continue
+        state, _ = read_all(dev)
+        if state: return dev, state
+        dev.close(); time.sleep(0.5)
+    sys.exit(f"the ADI-2 Pro did not come back within {wait:.0f} s after the basic mode change")
+
 def profile_cmd(args):
     if not args or args[0] not in ("list", "show", "save", "load"):
         sys.exit("usage: adi2 profile list | show NAME | save NAME [--with-levels] [--note=TEXT] [keys] | load NAME")
@@ -474,6 +494,7 @@ def profile_cmd(args):
     changed = [k for k in order if str(cur(k)) != str(d[k])]
     if not changed: print(f"{name}: already active"); return
     def apply(keys):
+        nonlocal dev, state
         for k in keys:
             sc, n = k.split(".", 1)
             if n == "volume" and sc.startswith("ph"):
@@ -482,7 +503,10 @@ def profile_cmd(args):
                     print(f"skip {k}: {c} -> {d[k]} is a >6 dB raise; set it by hand"); skipped.add(k); continue
             addr, idx, raw, _ = from_human(sc, n, str(d[k]))
             dev.send(0x02, encode_container(addr, idx, raw))
-            time.sleep(1.5 if k == "device.basic_mode" else 0.3)
+            if k == "device.basic_mode":
+                dev, state = reconnect(dev)
+            else:
+                time.sleep(0.3)
     skipped = set()
     apply(changed)
     # Re-read every key in the profile: a basic_mode switch can move other settings by itself.
