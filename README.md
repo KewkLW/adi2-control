@@ -18,13 +18,14 @@ whole setups under a name ("DJ stream", "PC listening") that you switch with one
 
 | | |
 |---|---|
-| Device | RME ADI-2 Pro, USB ID `2a39:3fd2` |
+| Device | RME ADI-2 Pro FS R Black Edition (reports itself over USB as "ADI-2 Pro", ID `2a39:3fd2`) |
 | Firmware on the test unit | USB/FPGA 267, DSP 128, fallback BIOS 250 (read with `tools/adi2_fw.py`) |
 | OS | Arch based (Omarchy), Linux 7.2 |
 | Audio stack | PipeWire 1.6.8, WirePlumber 0.5.17, alsa-lib 1.2.16 |
 | Python | 3.15 (needs 3.8 or newer, standard library only) |
 
-Only the ADI-2 Pro is supported. The ADI-2 DAC and the ADI-2/4 Pro SE use the same protocol family
+The ADI-2 Pro family (original, FS, FS R Black Edition) shares the USB ID and protocol, so it should
+work on all of them; only the FS R Black Edition has been tested. The ADI-2 DAC and the ADI-2/4 Pro SE use the same protocol family
 but different device IDs and parameter tables; they are not handled here and have not been tested.
 
 ## Install
