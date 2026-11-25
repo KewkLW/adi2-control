@@ -1,0 +1,8 @@
+{
+ "note": "Analog in 1/2 straight to the XLR/TRS line outs (e.g. a DJ controller or mixer into the ADI-2, out to speakers)",
+ "settings": {
+  "device.basic_mode": "ad/da",
+  "input.ad_conversion": "pcm",
+  "line.source": "analog"
+ }
+}

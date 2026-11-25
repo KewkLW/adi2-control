@@ -1,0 +1,7 @@
+{
+ "note": "Computer playback: USB basic mode, line outs follow USB (source auto)",
+ "settings": {
+  "device.basic_mode": "usb",
+  "line.source": "auto"
+ }
+}

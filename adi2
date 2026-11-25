@@ -13,9 +13,10 @@ ADI-2 Pro and ADI-2/4 Pro SE/EX"). Stdlib + libasound (ctypes), talks to the ALS
   adi2 preset load|save N     device setups 1..9 (save overwrites that slot)
   adi2 profile list           named setups for jobs (dj-stream, pc, ...)
   adi2 profile show NAME      what a named setup sets
-  adi2 profile save NAME [--with-volume] [scope.param ...]
-                              store the current routing/mode (volumes only with --with-volume)
-  adi2 profile load NAME      apply it (basic_mode first; phones volume +6 dB guard still applies)
+  adi2 profile save NAME [--with-levels] [--note=TEXT] [scope.param ...]
+                              store the current routing and mode; volumes, ref levels,
+                              mute and dim only with --with-levels
+  adi2 profile load NAME      apply it (basic_mode first; phones +6 dB volume guard applies)
   adi2 raw F0 ... F7          send raw SysEx, print replies
 """
 import ctypes, ctypes.util, json, os, re, select, sys, time
@@ -404,33 +405,50 @@ def decode_status(m):
     }
 
 # ---------------------------------------------------------------- commands
-PROFILE_DIR = os.path.expanduser("~/.config/adi2/profiles")
-# Routing and mode keys a profile captures by default. Volumes are opt-in (--with-volume).
+PROFILE_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "adi2", "profiles")
+EXAMPLE_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "profiles")  # shipped examples
+# Routing and mode only by default: loading a profile must never make anything louder.
 PROFILE_KEYS = [
     "device.basic_mode", "device.clock_source", "device.dual_phones", "device.digital_out_source",
     "device.optical_out_source", "device.mute_line_vs_ph12", "device.mute_line_vs_ph34",
-    "input.ad_conversion", "input.ref_level", "input.auto_ref_level",
-    "line.source", "line.ref_level", "line.mute", "line.dim", "line.loopback_to_usb",
-    "ph12.source", "ph12.ref_level", "ph12.mute", "ph12.loopback_to_usb",
-    "ph34.source", "ph34.ref_level", "ph34.mute", "ph34.loopback_to_usb",
+    "input.ad_conversion",
+    "line.source", "line.loopback_to_usb",
+    "ph12.source", "ph12.loopback_to_usb",
+    "ph34.source", "ph34.loopback_to_usb",
 ]
-VOLUME_KEYS = ["line.volume", "ph12.volume", "ph34.volume"]
+# Anything that changes loudness: only with --with-levels (volumes, output and input levels, mute, dim).
+LEVEL_KEYS = [
+    "input.ref_level", "input.auto_ref_level",
+    "line.volume", "line.ref_level", "line.mute", "line.dim",
+    "ph12.volume", "ph12.ref_level", "ph12.mute",
+    "ph34.volume", "ph34.ref_level", "ph34.mute",
+]
 
-def profile_path(name):
+def profile_path(name, write=False):
+    """Your profile dir first, then the examples shipped in the repo (read only)."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", name): sys.exit(f"bad profile name {name!r}")
-    return os.path.join(PROFILE_DIR, name + ".json")
+    mine = os.path.join(PROFILE_DIR, name + ".json")
+    if write or os.path.exists(mine): return mine
+    ex = os.path.join(EXAMPLE_DIR, name + ".json")
+    if os.path.exists(ex): return ex
+    sys.exit(f"no profile {name!r} (adi2 profile list)")
 
 def profile_cmd(args):
     if not args or args[0] not in ("list", "show", "save", "load"):
-        sys.exit("usage: adi2 profile list | show NAME | save NAME [--with-volume] [keys] | load NAME")
+        sys.exit("usage: adi2 profile list | show NAME | save NAME [--with-levels] [--note=TEXT] [keys] | load NAME")
     if args[0] == "list":
-        names = sorted(f[:-5] for f in os.listdir(PROFILE_DIR) if f.endswith(".json")) if os.path.isdir(PROFILE_DIR) else []
-        for n in names:
-            d = json.load(open(profile_path(n)))
-            print(f"{n:16} {d.get('note', '')}")
+        seen = set()
+        for where, d in (("", PROFILE_DIR), ("example", EXAMPLE_DIR)):
+            if not os.path.isdir(d): continue
+            for f in sorted(os.listdir(d)):
+                if not f.endswith(".json") or f[:-5] in seen: continue
+                seen.add(f[:-5])
+                note = json.load(open(os.path.join(d, f))).get("note", "")
+                print(f"{f[:-5]:16} {'(' + where + ') ' if where else ''}{note}")
         return
     if len(args) < 2: sys.exit("profile name missing")
-    name, path = args[1], profile_path(args[1])
+    name = args[1]
+    path = profile_path(name, write=args[0] == "save")
     if args[0] == "show":
         d = json.load(open(path))
         if d.get("note"): print(f"# {d['note']}")
@@ -442,7 +460,7 @@ def profile_cmd(args):
     cur = lambda k: state.get(k.split(".", 1)[0], {}).get(k.split(".", 1)[1])
     if args[0] == "save":
         extra = [a for a in args[2:] if not a.startswith("--")]
-        keys = PROFILE_KEYS + (VOLUME_KEYS if "--with-volume" in args else []) + extra
+        keys = PROFILE_KEYS + (LEVEL_KEYS if "--with-levels" in args else []) + extra
         note = next((a.split("=", 1)[1] for a in args[2:] if a.startswith("--note=")), "")
         settings = {k: cur(k) for k in keys if cur(k) is not None}
         os.makedirs(PROFILE_DIR, exist_ok=True)
@@ -462,7 +480,7 @@ def profile_cmd(args):
                 print(f"skip {k}: {c} -> {d[k]} is a >6 dB raise; set it by hand"); continue
         addr, idx, raw, _ = from_human(sc, n, str(d[k]))
         dev.send(0x02, encode_container(addr, idx, raw))
-        time.sleep(1.0 if k == "device.basic_mode" else 0.15)
+        time.sleep(1.5 if k == "device.basic_mode" else 0.3)
     time.sleep(0.5)
     state, _ = read_all(dev)
     bad = [k for k in changed if str(cur(k)) != str(d[k])]
