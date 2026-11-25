@@ -11,7 +11,7 @@ IOKit USB directly (see re/FINDINGS.md). Only the two reads the tool does at sta
               bulk IN EP 0x88, 256 bytes; LE dwords at 236 fallback USB, 244 USB/FPGA, 252 DSP.
 
 Never sends the write-side requests (0x18 wValue 2/3/0x33 = program/erase, 0x17, 0x21).
-Needs rw on /dev/bus/usb/BBB/DDD (root, or the udev rule in config/).
+Needs rw on /dev/bus/usb/BBB/DDD (run as root; no udev rule is shipped on purpose).
 """
 import ctypes, fcntl, glob, os, struct, sys, time
 

@@ -24,6 +24,9 @@ whole setups under a name ("DJ stream", "PC listening") that you switch with one
 | Audio stack | PipeWire 1.6.8, WirePlumber 0.5.17, alsa-lib 1.2.16 |
 | Python | 3.15 (needs 3.8 or newer, standard library only) |
 
+Older firmware may not answer over MIDI at all: RME's own ADI-2 Remote asks for FPGA 267 and DSP 127
+or newer. If `adi2 status` says "no reply from the device", check the firmware first.
+
 The ADI-2 Pro family (original, FS, FS R Black Edition) shares the USB ID and protocol, so it should
 work on all of them; only the FS R Black Edition has been tested. The ADI-2 DAC and the ADI-2/4 Pro SE use the same protocol family
 but different device IDs and parameter tables; they are not handled here and have not been tested.
@@ -38,10 +41,15 @@ cd adi2-control
 ./install.sh --pipewire --restart  # ...and restarts PipeWire to load them (audio drops for a second)
 ```
 
-Needs: Python 3 and alsa-lib (`libasound`). No pip packages, no root. Your user needs access to
-`/dev/snd/seq`, which a normal desktop login already gives. `--pipewire` needs the unit plugged in
-and powered on, because it reads the unit's name from PipeWire. Existing config files are backed up
-to `*.bak` before they are replaced.
+Needs: Python 3.8+ and alsa-lib (`libasound`). No pip packages, no root. Your user needs access to
+`/dev/snd/seq`, which a normal desktop login already gives. `adi2` itself works with any audio stack
+(PipeWire, PulseAudio, JACK, plain ALSA): it only uses the ALSA sequencer.
+
+`--pipewire` is optional and needs PipeWire with **WirePlumber 0.5 or newer** (the installer checks;
+0.4 uses a different config format and would ignore the Pro Audio rule). It also needs the unit
+plugged in and powered on, because it reads the unit's name from PipeWire. Files it replaces are
+backed up next to themselves as `*.bak.<date-time>`. Restarting PipeWire cuts audio to every app
+for a moment, and some apps (browsers, DAWs, games) need a restart afterwards to get sound back.
 
 Check it can see the unit: `adi2 status`.
 
@@ -50,7 +58,8 @@ Check it can see the unit: `adi2 status`.
 ```
 adi2 dump [--json]               every setting, decoded
 adi2 get line.source ph34.volume one or more settings
-adi2 set line.source analog      change settings (phones volume jumps over 6 dB need --force)
+adi2 set line.source analog      change settings, read back; exit 1 if one did not take
+                                 (volume raises over 6 dB, or with the volume unknown, need --force)
 adi2 list [scope]                every parameter name and its allowed values
 adi2 watch                       print changes live (knob turns, other remotes)
 adi2 status                      lock, clock, sample rate, what is plugged in
@@ -69,14 +78,16 @@ A profile stores the unit's routing and mode under a name, so switching between 
 adi2 profile list                list yours and the examples that ship in profiles/
 adi2 profile show NAME           what it sets
 adi2 profile load NAME           apply it
-adi2 profile save NAME [--note="what it is for"]   save how the unit is set right now
+adi2 profile save NAME [--note "what it is for"] [--with-levels] [scope.param ...]
+                                 save how the unit is set right now (extra keys are added)
 ```
 
 Examples in this repo:
 
 - `analog-to-line`: analog input 1/2 straight to the XLR/TRS line outputs, for a DJ controller,
-  mixer or turntable preamp playing through speakers on the line outs. The computer can still play
-  to the phones outputs over USB.
+  mixer or turntable preamp playing through speakers on the line outs. Phones 1/2 shares its
+  converter with the line outputs, so it hears the analog input too; the computer plays to
+  **Phones 3/4** over USB (the profile turns Dual Phones on and sets Phones 3/4 to USB 1/2).
 - `usb`: back to normal computer playback.
 
 Your own profiles live in `~/.config/adi2/profiles/` and take priority over the examples.
@@ -87,8 +98,11 @@ you ask for them with `--with-levels`, and even then loading a profile will not 
 by more than 6 dB in one step. Routing still matters: switching the line outputs to a hot source plays
 that source at the current volume, so check the volume before you load one with something playing.
 
-After loading, `adi2` reads every setting in the profile back from the unit, applies any that did not
-stick once more, and exits with code 1 if something still does not match.
+Loading checks every key and value in the file before it sends anything, so a typo never leaves the
+unit half switched. With levels in the profile it applies them in a safe order: anything that gets
+quieter (mute on, dim on, lower volume) first, then the Basic Mode, then routing, then anything that
+gets louder. After loading, `adi2` reads every setting in the profile back from the unit, applies any
+that did not stick once more, and exits with code 1 if something still does not match.
 
 ## Things we learned the hard way
 
@@ -115,9 +129,11 @@ stick once more, and exits with code 1 if something still does not match.
   profile (raw channels, no surround remixing) and stops it suspending, so there is no pop or relock
   when audio starts.
 - `~/.config/pipewire/pipewire.conf.d/50-rme-adi2-stereo.conf` adds two plain stereo devices on
-  top: **RME Phones 1/2** (USB play 1/2) and **RME In 1/2** (analog in 1/2). They wait for the
-  unit and relink when it is power cycled or replugged, and never fall back to other speakers or
-  mics while it is off. The comments in the file explain each setting.
+  top: **RME Phones 1/2** (USB play 1/2) and **RME In 1/2** (analog in 1/2). They are meant to wait
+  for the unit and relink when it comes back, and never fall back to other speakers or mics while it
+  is off. Known issue: after a Basic Mode change (which reconnects the unit on USB) we have seen
+  "RME Phones 1/2" stay unlinked; `pw-link`, or restarting WirePlumber, links it again. Apps that
+  play straight to the ADI-2 device are not affected. The comments in the file explain each setting.
 
 ## MIDI access
 
@@ -144,6 +160,18 @@ Midi Through) points it at a virtual sequencer port in place of the device.
   https://www.rme-audio.de/downloads/adi2remote_midi_protocol.zip if you want to read it
   (`docs/` is ignored by git for this).
 
+## Tests
+
+`python3 -I tools/test_adi2_cli.py` checks the safety rules (volume guard, profile validation and
+order) against a fake device. It never opens MIDI. `python3 -I tools/test_adi2_flash.py` covers the
+firmware research tools.
+
+## Uninstall
+
+Remove `~/.local/bin/adi2`, `~/.config/adi2/`, and (if you used `--pipewire`)
+`~/.config/wireplumber/wireplumber.conf.d/50-rme-adi2.conf` and
+`~/.config/pipewire/pipewire.conf.d/50-rme-adi2-stereo.conf`, then restart PipeWire.
+
 ## Repo layout
 
 | path | what |
@@ -152,7 +180,7 @@ Midi Through) points it at a virtual sequencer port in place of the device.
 | `install.sh` | installer |
 | `profiles/` | example profiles |
 | `config/` | PipeWire and WirePlumber configs |
-| `tools/` | firmware revision reader and the firmware updater research |
+| `tools/` | tests, firmware revision reader, and the firmware updater research |
 | `re/` | reverse engineering notes |
 | `diagnosis/` | write up of an incident where the unit stopped answering MIDI |
 

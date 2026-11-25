@@ -285,6 +285,13 @@ class Dev:
         self.seq = ctypes.c_void_p()
         e = lib.snd_seq_open(ctypes.byref(self.seq), b"default", SEQ_OPEN_DUPLEX, SEQ_NONBLOCK)
         if e < 0: sys.exit(f"cannot open the ALSA sequencer: {err(e)}")
+        try:
+            self._setup(lib, err)
+        except BaseException:
+            lib.snd_seq_close(self.seq); self.seq = None
+            raise
+
+    def _setup(self, lib, err):
         lib.snd_seq_set_client_name(self.seq, b"adi2")
         *addr, self.card = find_port(lib, self.seq)
         self.addr = tuple(addr)
@@ -368,6 +375,7 @@ class Dev:
 NO_REPLY = "no reply from the device (ADI-2 Pro MIDI port found, but it sent nothing)"
 
 def read_all(dev):
+    dev.read(); dev.buf.clear()  # stale replies queued before this request (e.g. another client's dump)
     dev.send(0x03, [0x09])
     state, status = {}, None
     last_param = time.time()
@@ -424,10 +432,12 @@ PROFILE_KEYS = [
 LEVEL_KEYS = [
     "device.mute_line_vs_ph12", "device.mute_line_vs_ph34",
     "input.ref_level", "input.auto_ref_level",
-    "line.volume", "line.ref_level", "line.mute", "line.dim",
-    "ph12.volume", "ph12.ref_level", "ph12.mute",
-    "ph34.volume", "ph34.ref_level", "ph34.mute",
+    "line.volume", "line.ref_level", "line.auto_ref_level", "line.mute", "line.dim",
+    "ph12.volume", "ph12.ref_level", "ph12.auto_ref_level", "ph12.mute", "ph12.dim",
+    "ph34.volume", "ph34.ref_level", "ph34.auto_ref_level", "ph34.mute", "ph34.dim",
 ]
+VOLUME_SCOPES = ("line", "ph12", "ph34")
+MAX_RAISE_TENTHS = 60  # refuse a volume raise over 6.0 dB in one step
 
 def profile_path(name, write=False):
     """Your profile dir first, then the examples shipped in the repo (read only)."""
@@ -438,25 +448,68 @@ def profile_path(name, write=False):
     if os.path.exists(ex): return ex
     sys.exit(f"no profile {name!r} (adi2 profile list)")
 
-def reconnect(old, wait=20.0):
+def usb_devnum(card):
+    """'BBB/DDD' of the card's USB device; DDD changes when the unit re-enumerates."""
+    try:
+        with open(f"/proc/asound/card{card}/usbbus") as f: return f.read().strip()
+    except OSError:
+        return None
+
+def reconnect(old, want_mode, wait=20.0):
     """A basic_mode change makes the unit drop off USB and come back as a new ALSA client, so the old
-    sequencer connection points at a port that is gone. Reopen until the unit answers again."""
+    sequencer connection points at a port that is gone. Wait for the drop (if it happens), then reopen
+    until the unit answers with the new mode. Returns (dev, state)."""
+    time.sleep(0.3)  # let the SysEx leave before our subscription (and the port) goes away
+    before = usb_devnum(old.card) if old.card >= 0 else None
     old.close()
-    end = time.time() + wait
-    time.sleep(1.0)
+    t0 = time.time()
+    while before and time.time() - t0 < 6.0 and usb_devnum(old.card) == before:
+        time.sleep(0.2)  # not re-enumerated yet (or this change does not re-enumerate)
+    end, last = time.time() + wait, ""
     while time.time() < end:
         try:
             dev = Dev()
-        except SystemExit:
-            time.sleep(0.5); continue
+        except SystemExit as e:
+            last = str(e); time.sleep(0.5); continue
         state, _ = read_all(dev)
-        if state: return dev, state
+        if state and state.get("device", {}).get("basic_mode") == want_mode:
+            return dev, state
+        last = f"unit answers with basic_mode {state.get('device', {}).get('basic_mode')!r}" if state else NO_REPLY
         dev.close(); time.sleep(0.5)
-    sys.exit(f"the ADI-2 Pro did not come back within {wait:.0f} s after the basic mode change")
+    sys.exit(f"the ADI-2 Pro did not come back in basic mode {want_mode!r} within {wait:.0f} s ({last})")
+
+def canon(key, value):
+    """Validate scope.param and value, return (addr, idx, raw, canonical value as dump shows it)."""
+    if not isinstance(key, str) or "." not in key: sys.exit(f"bad key {key!r}: use scope.param")
+    sc, n = key.split(".", 1)
+    if sc not in SCOPES: sys.exit(f"unknown scope {sc}; scopes: {', '.join(SCOPES)}")
+    if isinstance(value, bool): value = "on" if value else "off"
+    addr, idx, raw, _ = from_human(sc, n, str(value))
+    return addr, idx, raw, to_human(addr, idx, raw, addr != 12)[2]
+
+def raise_tenths(cur, new):
+    """volume raise in 0.1 dB steps, or None when the current volume is unknown."""
+    if not isinstance(cur, (int, float)): return None
+    return round((new - cur) * 10)
+
+def save_profile(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=1); f.write("\n")
+    os.replace(tmp, path)
+
+def load_json(path):
+    try:
+        with open(path) as f: d = json.load(f)
+        if not isinstance(d.get("settings"), dict): raise ValueError("no \"settings\" object")
+        return d
+    except (OSError, ValueError) as e:
+        sys.exit(f"{path}: not a usable profile ({e})")
 
 def profile_cmd(args):
-    if not args or args[0] not in ("list", "show", "save", "load"):
-        sys.exit("usage: adi2 profile list | show NAME | save NAME [--with-levels] [--note=TEXT] [keys] | load NAME")
+    usage = "usage: adi2 profile list | show NAME | save NAME [--with-levels] [--note TEXT] [scope.param ...] | load NAME"
+    if not args or args[0] not in ("list", "show", "save", "load"): sys.exit(usage)
     if args[0] == "list":
         seen = set()
         for where, d in (("", PROFILE_DIR), ("example", EXAMPLE_DIR)):
@@ -464,60 +517,97 @@ def profile_cmd(args):
             for f in sorted(os.listdir(d)):
                 if not f.endswith(".json") or f[:-5] in seen: continue
                 seen.add(f[:-5])
-                note = json.load(open(os.path.join(d, f))).get("note", "")
+                try:
+                    with open(os.path.join(d, f)) as fh: note = json.load(fh).get("note", "")
+                except (OSError, ValueError):
+                    note = "(unreadable JSON)"
                 print(f"{f[:-5]:16} {'(' + where + ') ' if where else ''}{note}")
         return
-    if len(args) < 2: sys.exit("profile name missing")
+    if len(args) < 2 or args[1].startswith(("-", ".")): sys.exit(usage)
     name = args[1]
     path = profile_path(name, write=args[0] == "save")
     if args[0] == "show":
-        d = json.load(open(path))
+        d = load_json(path)
         if d.get("note"): print(f"# {d['note']}")
         for k, v in d["settings"].items(): print(f"{k:28} {v}")
         return
+    if args[0] == "save":
+        rest, note, levels, extra = args[2:], "", False, []
+        while rest:
+            a = rest.pop(0)
+            if a == "--with-levels": levels = True
+            elif a.startswith("--note="): note = a.split("=", 1)[1]
+            elif a == "--note":
+                if not rest: sys.exit("--note needs a text")
+                note = rest.pop(0)
+            elif a.startswith("-"): sys.exit(f"unknown option {a}\n{usage}")
+            else: extra.append(a)
+        for k in extra:
+            if "." not in k: sys.exit(f"bad key {k!r}: use scope.param")
+            sc, n = k.split(".", 1)
+            if sc not in SCOPES or n not in [x for x, _ in SCOPES[sc][1].values()]: sys.exit(f"unknown param {k} (adi2 list)")
+            if (sc, n) in READONLY: sys.exit(f"{k} is display only")
     dev = Dev()
     state, _ = read_all(dev)
     if not state: sys.exit(NO_REPLY)
     cur = lambda k: state.get(k.split(".", 1)[0], {}).get(k.split(".", 1)[1])
     if args[0] == "save":
-        extra = [a for a in args[2:] if not a.startswith("--")]
-        keys = PROFILE_KEYS + (LEVEL_KEYS if "--with-levels" in args else []) + extra
-        note = next((a.split("=", 1)[1] for a in args[2:] if a.startswith("--note=")), "")
+        keys = list(dict.fromkeys(PROFILE_KEYS + (LEVEL_KEYS if levels else []) + extra))
         settings = {k: cur(k) for k in keys if cur(k) is not None}
-        os.makedirs(PROFILE_DIR, exist_ok=True)
-        json.dump({"note": note, "saved": time.strftime("%Y-%m-%d %H:%M"), "settings": settings}, open(path, "w"), indent=1)
+        save_profile(path, {"note": note, "saved": time.strftime("%Y-%m-%d %H:%M"), "settings": settings})
         print(f"saved {name}: {len(settings)} settings -> {path}")
         return
-    d = json.load(open(path))["settings"]
-    # basic_mode gates which sources are allowed, so it goes first and settles.
-    order = [k for k in d if k == "device.basic_mode"] + [k for k in d if k != "device.basic_mode"]
-    changed = [k for k in order if str(cur(k)) != str(d[k])]
+
+    # ---- load: validate everything before sending anything, so a bad file never half-applies
+    want = {}
+    for k, v in load_json(path)["settings"].items():
+        want[k] = canon(k, v)
+    changed = [k for k in want if cur(k) != want[k][3]]
     if not changed: print(f"{name}: already active"); return
+
+    # Safe order: get quieter first, then mode, then routing, then anything that gets louder.
+    def quieter(k):
+        n = k.split(".", 1)[1]
+        v = want[k][3]
+        if n in ("mute", "dim") and v == "on": return True
+        if n == "volume": return isinstance(cur(k), (int, float)) and v <= cur(k)
+        return False
+    louder_names = ("volume", "mute", "dim", "ref_level", "auto_ref_level", "mute_line_vs_ph12", "mute_line_vs_ph34")
+    first = [k for k in changed if quieter(k)]
+    mode = [k for k in changed if k == "device.basic_mode"]
+    last = [k for k in changed if k not in first and k not in mode and k.split(".", 1)[1] in louder_names]
+    routing = [k for k in changed if k not in first + mode + last]
+    order = first + mode + routing + last
+
+    skipped, touched = {}, []
     def apply(keys):
         nonlocal dev, state
         for k in keys:
             sc, n = k.split(".", 1)
-            if n == "volume" and sc.startswith("ph"):
-                c = cur(k)
-                if isinstance(c, (int, float)) and float(d[k]) - c > 6:
-                    print(f"skip {k}: {c} -> {d[k]} is a >6 dB raise; set it by hand"); skipped.add(k); continue
-            addr, idx, raw, _ = from_human(sc, n, str(d[k]))
-            dev.send(0x02, encode_container(addr, idx, raw))
+            addr, idx, raw, v = want[k]
+            if n == "volume" and sc in VOLUME_SCOPES:
+                up = raise_tenths(cur(k), v)
+                if up is None: skipped[k] = "current volume unknown"; continue
+                if up > MAX_RAISE_TENTHS: skipped[k] = f"{cur(k)} -> {v} dB is a raise over 6 dB"; continue
+            dev.send(0x02, encode_container(addr, idx, raw)); touched.append(k)
             if k == "device.basic_mode":
-                dev, state = reconnect(dev)
+                dev, state = reconnect(dev, v)
             else:
                 time.sleep(0.3)
-    skipped = set()
-    apply(changed)
-    # Re-read every key in the profile: a basic_mode switch can move other settings by itself.
+    apply(order)
+    # Re-read every key: a basic_mode switch can move other settings by itself.
+    drift = []
     for attempt in range(2):
         time.sleep(0.5)
         state, _ = read_all(dev)
-        drift = [k for k in order if k not in skipped and str(cur(k)) != str(d[k])]
+        if not state: sys.exit(NO_REPLY)
+        drift = [k for k in order if k not in skipped and cur(k) != want[k][3]]
+        drift += [k for k in want if k not in changed and k not in skipped and cur(k) != want[k][3] and k not in drift]
         if not drift or attempt: break
         apply(drift)
-    for k in dict.fromkeys(changed + drift):
-        print(f"{k:28} {cur(k)}" + ("   <- did not take" if k in drift else ""))
+    for k in dict.fromkeys(touched + drift + list(skipped)):
+        tag = f"   <- skipped: {skipped[k]}; set it by hand" if k in skipped else ("   <- did not take" if k in drift else "")
+        print(f"{k:28} {cur(k)}{tag}")
     if drift: sys.exit(1)
 
 def main(argv):
@@ -553,28 +643,40 @@ def main(argv):
             sc, n = a.split(".", 1)
             print(f"{a} = {state.get(sc, {}).get(n, '?')}")
     elif cmd == "set":
-        if len(args) % 2: sys.exit("usage: adi2 set scope.param value [scope.param value ...]")
         force = "--force" in args
         args = [a for a in args if a != "--force"]
-        payload, wanted = [], []
-        state = None
-        for key, val in zip(args[::2], args[1::2]):
-            sc, n = key.split(".", 1)
-            if sc not in SCOPES: sys.exit(f"unknown scope {sc}; scopes: {', '.join(SCOPES)}")
-            addr, idx, raw, kind = from_human(sc, n, val)
-            if n == "volume" and sc.startswith("ph") and not force:
-                state = state or read_all(dev)[0]
-                cur = state.get(sc, {}).get("volume")
-                new = s12(raw) * 0.1
-                if isinstance(cur, (int, float)) and new - cur > 6:
-                    sys.exit(f"refusing to raise {sc}.volume {cur} -> {new} dB in one step (>6 dB jump, ears). Use --force.")
-            payload += encode_container(addr, idx, raw); wanted.append(key)
-        dev.send(0x02, payload)
-        time.sleep(0.15)
+        if not args or len(args) % 2: sys.exit("usage: adi2 set [--force] scope.param value [scope.param value ...]")
+        pairs = [(k, canon(k, v)) for k, v in zip(args[::2], args[1::2])]
         state, _ = read_all(dev)
-        for key in wanted:
-            sc, n = key.split(".", 1)
-            print(f"{key} = {state.get(sc, {}).get(n, '?')}")
+        if not state: sys.exit(NO_REPLY)
+        cur = lambda k: state.get(k.split(".", 1)[0], {}).get(k.split(".", 1)[1])
+        if not force:
+            for k, (addr, idx, raw, v) in pairs:
+                sc, n = k.split(".", 1)
+                if n == "volume" and sc in VOLUME_SCOPES:
+                    up = raise_tenths(cur(k), v)
+                    if up is None: sys.exit(f"{k}: current volume unknown, refusing to set it blind. Use --force.")
+                    if up > MAX_RAISE_TENTHS:
+                        sys.exit(f"refusing to raise {k} {cur(k)} -> {v} dB in one step (>6 dB jump, ears). Use --force.")
+        mode = [(k, c) for k, c in pairs if k == "device.basic_mode"]
+        rest = [(k, c) for k, c in pairs if k != "device.basic_mode"]
+        if mode:  # the unit re-enumerates on USB: send it alone, wait for it to come back
+            k, (addr, idx, raw, v) = mode[0]
+            dev.send(0x02, encode_container(addr, idx, raw))
+            dev, state = reconnect(dev, v)
+        if rest:
+            payload = []
+            for k, (addr, idx, raw, v) in rest: payload += encode_container(addr, idx, raw)
+            dev.send(0x02, payload)
+            time.sleep(0.15)
+            state, _ = read_all(dev)
+            if not state: sys.exit(NO_REPLY)
+        bad = 0
+        for k, (addr, idx, raw, v) in pairs:
+            got = cur(k)
+            bad += got != v
+            print(f"{k} = {got}" + ("   <- did not take" if got != v else ""))
+        if bad: sys.exit(1)
     elif cmd == "status":
         dev.send(0x03, [0x09])
         for m in dev.messages(quiet=1.5, total=4):
